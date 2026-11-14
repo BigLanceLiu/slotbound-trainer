@@ -47,16 +47,25 @@
 
 **退出修改器时不会把金币改回去**——改出来的金币本来就是想留着的。
 
+## 下载
+
+GitHub Actions 每次推送到 `main` 都会编一份便携版：Actions 页面 → 对应的 build 运行 → Artifacts 里下载 zip。
+推 `v*` 标签（如 `git tag v0.2.0 && git push origin v0.2.0`）会自动发 Release，附上 zip。
+
+zip 里是：`slotbound_trainer.exe`（修改器）、`slotbound_lua.dll`（注入用，必须和 exe 放同一个目录）、
+`slotbound_inject.exe` / `slotbound_luacmd.exe`（命令行工具）、`trainer.ini`（默认配置）。
+
 ## 编译
 
 ```powershell
 .\build.ps1          # 开发版，读 config\trainer.ini
-.\build.ps1 -Dist    # 便携版，读 exe 旁边的 trainer.ini，复制到 dist\
+.\build.ps1 -Dist    # 便携版 → dist\：修改器 + slotbound_lua.dll + 工具 + trainer.ini（CI 也是跑这个）
 ```
 
 需要 VS 2022（带 C++ 桌面开发）。产物在 `build\Release\`：
 
 - `slotbound_trainer.exe`：修改器本体
+- `slotbound_lua.dll` / `slotbound_inject.exe` / `slotbound_luacmd.exe`：注入用的 DLL、命令行注入 / 卸载、命令行执行 Lua
 - `slotbound_probe.exe`：命令行定位工具，排查用
 
 ```powershell
