@@ -20,6 +20,7 @@
 #include "overlay.h"
 #include "process.h"
 #include "slotctl.h"
+#include "unitlevel.h"
 
 #define SB_WIDEN2(x) L##x
 #define SB_WIDEN(x) SB_WIDEN2(x)
@@ -360,10 +361,9 @@ struct OptionsUi {
     std::map<std::string, int> variantPick;  // 每个词条选的档位下标，-1 = 随机
     char filter[64] = {};
     bool onlyFit = false;
-    std::string injectError;
 };
 
-// 词条页、刻印页顶部：没注入时给注入按钮；已注入时显示状态和「卸载注入」。返回 true = 可以用
+// 单位页、老虎机页顶部：没注入时给注入按钮；已注入时显示状态和「卸载注入」。返回 true = 可以用
 bool DrawBridgeBar(const GameProcess& game, std::string& injectError, const char* feature)
 {
     if (!game.Pid()) {
@@ -373,7 +373,7 @@ bool DrawBridgeBar(const GameProcess& game, std::string& injectError, const char
     if (!bridge::Injected()) {
         ImGui::TextWrapped("改%s要在游戏里执行 Lua，需要先把 slotbound_lua.dll 注入游戏。"
                            "它只改 love.dll 导入表里的一个函数指针，不改游戏文件，点「卸载注入」或游戏退出就没了。", feature);
-        if (ImGui::Button("注入（启用词条 / 刻印功能）")) {
+        if (ImGui::Button("注入（启用单位 / 老虎机功能）")) {
             injectError.clear();
             if (!bridge::Inject(game.Pid(), L"", injectError))
                 injectError = "注入失败：" + injectError;
@@ -389,29 +389,20 @@ bool DrawBridgeBar(const GameProcess& game, std::string& injectError, const char
     return true;
 }
 
-void DrawOptionsTab(const GameProcess& game, OptionEditor& editor, OptionsUi& ui)
+// 「单位」页 → 「词条」子页（单位信息和注入栏在外层）
+void DrawOptionsBody(OptionEditor& editor, OptionsUi& ui)
 {
     const float scale = ImGui::GetStyle().FontScaleDpi;
-    if (!DrawBridgeBar(game, ui.injectError, "词条"))
-        return;
-    ImGui::SameLine();
     if (ImGui::SmallButton("重读词条表"))
         editor.ReloadCatalog();
     if (!editor.Error().empty())
         ImGui::TextColored(kRed, "%s", editor.Error().c_str());
 
     const OptionEditor::Unit& unit = editor.Selected();
-    SectionTitle("选中的单位");
     if (!unit.valid) {
-        ImGui::TextColored(kAmber, "请先在游戏里点一下己方单位，这里会显示它的词条");
+        ImGui::TextDisabled("正在读这个单位的词条…");
         return;
     }
-    ImGui::Text("单位 %s  品级 %s  等级 %d  阵容第 %d 个", unit.sym.c_str(), GradeName(unit.grade), unit.rank, unit.rosterIndex);
-    ImGui::SameLine();
-    if (unit.locked)
-        ImGui::TextColored(kGreen, "（锁定中）");
-    else
-        ImGui::TextDisabled("（最近选中的，面板已关）");
 
     const int count = static_cast<int>(unit.slots.size());
     FollowTargetSlot(ui.targetSlot, ui.unitKey, unit.sym, unit.rosterIndex, count);
@@ -557,7 +548,6 @@ struct ImprintsUi {
     std::string unitKey;                   // 换了单位就回到「新增」
     std::map<std::string, int> levelPick;  // 目录里每个刻印选的等级（1 起）
     char filter[64] = {};
-    std::string injectError;
 };
 
 // 等级下拉框：返回 true = 这一帧改了
@@ -589,29 +579,20 @@ std::string ImprintEffect(const ImprintEditor::Def* d, int level)
     return IconText(d->levels[level - 1]);
 }
 
-void DrawImprintsTab(const GameProcess& game, ImprintEditor& editor, ImprintsUi& ui)
+// 「单位」页 → 「刻印」子页（单位信息和注入栏在外层）
+void DrawImprintsBody(ImprintEditor& editor, ImprintsUi& ui)
 {
     const float scale = ImGui::GetStyle().FontScaleDpi;
-    if (!DrawBridgeBar(game, ui.injectError, "刻印"))
-        return;
-    ImGui::SameLine();
     if (ImGui::SmallButton("重读刻印表"))
         editor.ReloadCatalog();
     if (!editor.Error().empty())
         ImGui::TextColored(kRed, "%s", editor.Error().c_str());
 
     const ImprintEditor::Unit& unit = editor.Selected();
-    SectionTitle("选中的单位");
     if (!unit.valid) {
-        ImGui::TextColored(kAmber, "请先在游戏里点一下己方单位，这里会显示它的刻印");
+        ImGui::TextDisabled("正在读这个单位的刻印…");
         return;
     }
-    ImGui::Text("单位 %s  品级 %s  等级 %d  阵容第 %d 个", unit.sym.c_str(), GradeName(unit.grade), unit.rank, unit.rosterIndex);
-    ImGui::SameLine();
-    if (unit.locked)
-        ImGui::TextColored(kGreen, "（锁定中）");
-    else
-        ImGui::TextDisabled("（最近选中的，面板已关）");
     if (const ImprintEditor::Def* sig = editor.Find(unit.signature))
         ImGui::TextDisabled("这个兵种 / 品级天生的刻印：%s", sig->name.c_str());
 
@@ -740,6 +721,17 @@ void DrawImprintsTab(const GameProcess& game, ImprintEditor& editor, ImprintsUi&
     ImGui::EndChild();
 }
 
+// 下一个单选框放得下就接在同一行，放不下就换行（窗口宽度 / DPI 变了也不会超出）
+void SameLineIfFits(const char* radioLabel)
+{
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float width = ImGui::GetFrameHeight() + style.ItemInnerSpacing.x + ImGui::CalcTextSize(radioLabel, nullptr, true).x;
+    const float right = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+    ImGui::SameLine();
+    if (ImGui::GetCursorScreenPos().x + width > right)
+        ImGui::NewLine();
+}
+
 // 老虎机符号 → 中文
 const char* SlotSymbolName(char c)
 {
@@ -750,7 +742,7 @@ const char* SlotSymbolName(char c)
     case 'M': return "法师";
     case 'H': return "骑兵";
     case 'D': return "决斗者";
-    case 'J': return "王牌";
+    case 'J': return "小丑";
     case 'B': return "空";
     }
     return "?";
@@ -767,15 +759,19 @@ void DrawSlotTab(const GameProcess& game, Config& cfg, const SlotControl& slot, 
     SectionTitle("大奖模式");
     ToggleSwitch("每次都转出大奖", &cfg.slotJackpot, "打开后每次拉杆都是 9 格同一个兵种（游戏的大奖）；关掉恢复正常");
     ImGui::TextDisabled("兵种：");
-    static const char* kSymbols[] = { "W", "A", "S", "M", "H", "D" };
+    // J = 小丑：万能符号；整条线都是小丑时出「小丑」单位，9 格全小丑 = 8 条小丑线 + 大奖
+    static const char* kSymbols[] = { "W", "A", "S", "M", "H", "D", "J", "random" };
     for (const char* s : kSymbols) {
-        ImGui::SameLine();
-        if (ImGui::RadioButton(SlotSymbolName(s[0]), cfg.slotSymbol == s))
+        const bool random = s[1] != '\0';
+        const char* label = random ? "每次随机" : SlotSymbolName(s[0]);
+        SameLineIfFits(label);
+        if (ImGui::RadioButton(label, cfg.slotSymbol == s))
             cfg.slotSymbol = s;
+        if (s[0] == 'J')
+            ImGui::SetItemTooltip("小丑是万能符号；整条线都是小丑时出「小丑」单位。9 格全小丑 = 8 条小丑线，也算大奖");
+        if (random)
+            ImGui::SetItemTooltip("每次从 6 个普通兵种里随机一种（不含小丑）");
     }
-    ImGui::SameLine();
-    if (ImGui::RadioButton("每次随机", cfg.slotSymbol == "random"))
-        cfg.slotSymbol = "random";
 
     if (!slot.Hooked())
         ImGui::TextDisabled("正在连接老虎机…（还在主菜单的话，进一局就好）");
@@ -804,10 +800,14 @@ void DrawSlotTab(const GameProcess& game, Config& cfg, const SlotControl& slot, 
     }
 }
 
-// 经 Lua 桥工作的几页（词条、刻印、老虎机）：编辑器 + 界面状态 + 这一帧哪页开着
+// 经 Lua 桥工作的几页（单位：等级 + 词条 + 刻印；老虎机）：编辑器 + 界面状态 + 这一帧哪页开着
 struct LuaTabs {
+    std::string injectError;
     SlotControl slot;
-    std::string slotInjectError;
+    UnitLevelEditor level;
+    int levelInput = 1;
+    std::string levelUnitKey; // 换了单位就把输入框重置成它的当前 LV
+    bool unitOpen = false;
     OptionEditor options;
     OptionsUi optionsUi;
     bool optionsOpen = false;
@@ -816,6 +816,102 @@ struct LuaTabs {
     bool imprintsOpen = false;
 };
 
+// 「单位」页：选中单位的信息和等级，下面分「词条」「刻印」两个子页
+void DrawUnitTab(const GameProcess& game, LuaTabs& tabs)
+{
+    const float scale = ImGui::GetStyle().FontScaleDpi;
+    if (!DrawBridgeBar(game, tabs.injectError, "单位"))
+        return;
+    UnitLevelEditor& editor = tabs.level;
+    if (!editor.Error().empty())
+        ImGui::TextColored(kRed, "%s", editor.Error().c_str());
+
+    const UnitLevelEditor::Unit& unit = editor.Selected();
+    SectionTitle("选中的单位");
+    if (!unit.valid) {
+        ImGui::TextColored(kAmber, "请先在游戏里点一下己方单位，这里会显示它的等级、词条和刻印");
+        return;
+    }
+    ImGui::Text("单位 %s%s%s%s  品级 %s  阵容第 %d 个", unit.sym.c_str(), unit.subclass.empty() ? "" : "（",
+        unit.subclass.c_str(), unit.subclass.empty() ? "" : "）", GradeName(unit.grade), unit.rosterIndex);
+    ImGui::SameLine();
+    if (unit.locked)
+        ImGui::TextColored(kGreen, "（锁定中）");
+    else
+        ImGui::TextDisabled("（最近选中的，面板已关）");
+    ImGui::TextDisabled("生命 %.0f   攻击 %.1f   攻速 %.2f   射程 %.0f", unit.hp, unit.atk, unit.aspd, unit.range);
+
+    // 星级
+    ImGui::AlignTextToFramePadding();
+    ImGui::Text("星级 %d / %d", unit.rank, unit.maxRank);
+    ImGui::BeginDisabled(editor.Busy() || unit.needsClassSelect);
+    for (int r = unit.rank + 1; r <= unit.maxRank; ++r) {
+        const int idx = r - 2;
+        const int need = idx >= 0 && idx < static_cast<int>(unit.thresholds.size()) ? unit.thresholds[idx] : 0;
+        char label[48];
+        snprintf(label, sizeof(label), "升到 %d 星##r%d", r, r);
+        ImGui::SameLine();
+        if (ImGui::Button(label))
+            editor.RaiseRank(r);
+        ImGui::SetItemTooltip("走游戏命运石的升星流程：LV 不到 %d 会先补到 %d，然后游戏弹出转职选择，选完职业才真正升星", need, need);
+    }
+    ImGui::EndDisabled();
+    if (unit.rank >= unit.maxRank) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("已经是这个品级的最高星");
+    }
+    if (unit.needsClassSelect)
+        ImGui::TextColored(kAmber, "等你在游戏里选职业（目标 %d 星）；选完才算升星", unit.pendingRank);
+
+    // 吸收 LV
+    const std::string key = unit.sym + "#" + std::to_string(unit.rosterIndex);
+    if (key != tabs.levelUnitKey) {
+        tabs.levelUnitKey = key;
+        tabs.levelInput = unit.absorbLv;
+    }
+    ImGui::AlignTextToFramePadding();
+    ImGui::Text("吸收 LV %d", unit.absorbLv);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(130.0f * scale);
+    ImGui::InputInt("##lv", &tabs.levelInput, 1, 10);
+    if (tabs.levelInput < 1)
+        tabs.levelInput = 1;
+    ImGui::BeginDisabled(editor.Busy());
+    ImGui::SameLine();
+    if (ImGui::Button("改成这个"))
+        editor.SetLevel(tabs.levelInput);
+    for (int add : { 1, 5, 10 }) {
+        char label[16];
+        snprintf(label, sizeof(label), "+%d", add);
+        ImGui::SameLine();
+        if (ImGui::Button(label))
+            editor.SetLevel(unit.absorbLv + add);
+    }
+    ImGui::EndDisabled();
+    std::string gates;
+    for (size_t i = 0; i < unit.thresholds.size(); ++i)
+        gates += (i ? "、" : "") + std::to_string(i + 2) + " 星 LV" + std::to_string(unit.thresholds[i]);
+    ImGui::TextDisabled("LV 越高属性越高，可升可降（30 级以后成长减半，游戏规则）。升星门槛：%s；单改 LV 不会自动升星",
+        gates.empty() ? "—" : gates.c_str());
+    if (!editor.Message().empty())
+        ImGui::TextDisabled("%s", editor.Message().c_str());
+
+    ImGui::Spacing();
+    if (ImGui::BeginTabBar("unitTabs")) {
+        if (ImGui::BeginTabItem("词条")) {
+            tabs.optionsOpen = true;
+            DrawOptionsBody(tabs.options, tabs.optionsUi);
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("刻印")) {
+            tabs.imprintsOpen = true;
+            DrawImprintsBody(tabs.imprints, tabs.imprintsUi);
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+}
+
 // 返回 false 表示用户点了「退出」
 template <size_t N>
 bool DrawMenu(Config& cfg, const std::wstring& cfgPath, bool& cfgFileFound, const GameProcess& game, Tracked (&items)[N],
@@ -823,6 +919,7 @@ bool DrawMenu(Config& cfg, const std::wstring& cfgPath, bool& cfgFileFound, cons
 {
     bool keepRunning = true;
     const float scale = ImGui::GetStyle().FontScaleDpi;
+    tabs.unitOpen = false;
     tabs.optionsOpen = false;
     tabs.imprintsOpen = false;
     ImGui::SetNextWindowSize(ImVec2(640.0f * scale, 0.0f), ImGuiCond_Always);
@@ -842,20 +939,14 @@ bool DrawMenu(Config& cfg, const std::wstring& cfgPath, bool& cfgFileFound, cons
             ImGui::EndTabItem();
         }
 
+        if (ImGui::BeginTabItem("单位")) {
+            tabs.unitOpen = true;
+            DrawUnitTab(game, tabs);
+            ImGui::EndTabItem();
+        }
+
         if (ImGui::BeginTabItem("老虎机")) {
-            DrawSlotTab(game, cfg, tabs.slot, tabs.slotInjectError);
-            ImGui::EndTabItem();
-        }
-
-        if (ImGui::BeginTabItem("词条")) {
-            tabs.optionsOpen = true;
-            DrawOptionsTab(game, tabs.options, tabs.optionsUi);
-            ImGui::EndTabItem();
-        }
-
-        if (ImGui::BeginTabItem("刻印")) {
-            tabs.imprintsOpen = true;
-            DrawImprintsTab(game, tabs.imprints, tabs.imprintsUi);
+            DrawSlotTab(game, cfg, tabs.slot, tabs.injectError);
             ImGui::EndTabItem();
         }
 
@@ -1026,8 +1117,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
             t.var.Update(cfg.enabled && vc.lock, vc.lockValue);
         }
         const bool luaReady = menuOpen && game.Pid() && bridge::Injected();
-        tabs.options.Update(luaReady && tabs.optionsOpen);
-        tabs.imprints.Update(luaReady && tabs.imprintsOpen);
+        tabs.level.Update(luaReady && tabs.unitOpen);
+        tabs.options.Update(luaReady && tabs.unitOpen && tabs.optionsOpen);
+        tabs.imprints.Update(luaReady && tabs.unitOpen && tabs.imprintsOpen);
         // 老虎机控制不管菜单开没开都要保持（每秒检查包装还在不在）
         tabs.slot.Update(game.Pid() && bridge::Injected(), cfg.enabled && cfg.slotJackpot, cfg.slotSymbol);
         overlay::BeginFrame();

@@ -108,12 +108,28 @@ coins（Lua 全局，真正的来源）
 - **两套「品级」**：词条稀有度 common/rare/legend（普通/稀有/传说）；单位品级 normal/advanced/rare/special/legendary/prism
   （`language.zh['grade.label.*']`：普通/高级/稀有/特殊/传说/棱彩）。`permittedGrades` 用的是单位品级。
 
+## 单位等级（星级 / 吸收 LV）
+
+- 两种等级：`unit.rank` 星级（游戏叫「转职」，2 星得技能、3 星选职业分支）；`unit.absorbLV` 吸收 LV（吞单位涨，成就到 100）。
+- **星级跟着 LV 走**：`constants.evolution.rankThresholds[品级][星]` 是升星需要的 LV（normal 5/12、advanced 6/14、rare/special 8/18、
+  legendary 10/20、prism 16/28）；`maxRankByGrade` 目前都是 3。`rankMultipliers` 是星级属性倍率。
+- `__slotSetAwakeningLevel(u, lv)`（反汇编）：`_absorbLvApplied` 没有就用当前 LV，设 `absorbLV = lv`，再调上值函数按
+  「`_absorbLvApplied` → `absorbLV`」补属性差。可升可降、可逆：假单位 LV1→4 生命 100→105，改回 1 精确还原。
+- `__slotStoneRaiseRank(u, 目标星)`（命运石升星，反汇编）：目标 ≤ 当前星或超过最高星就不做；LV 不到门槛先 `__slotSetAwakeningLevel` 补到门槛；
+  再调上值 2（升星流程）→ 设 `needsClassSelect`、`pendingRank`、`classSelectTargetRank`，**rank 当场不变**，游戏弹转职选择，选完才升星。
+  没有降星流程。
+- 修改器「单位」页（`src/unitlevel.cpp`）直接调这两个函数。
+
 ## 老虎机
 
 - 状态在全局 `slot`（`src.game.slot.new` 造的对象，`package.loaded['src.game.slot']` 是类）。
   `slot.grid[行][列]`：当前 3×3；`slot.reelStrips[1..3]`：三条 64 格转轮带；`slot.reelStripPos`；`slot.result`（winningLines、won、_jackpot…）。
 - 符号：W 战士、A 弓手、S 枪兵、M 法师、H 骑兵、D 决斗者（王冠图标）；`J` 王牌（Joker）、`Blank` 空。
   `buildResultGrid` 上值 4 = `{W,A,S,M,H,D}`，上值 5 按 `symbolWeights` 加权抽。
+- **小丑 `J`**：万能符号（`joker_symbol_tooltip` = 视为所有单位符号），转轮带上没有，靠核心「小丑种子」（每格 1.5%）、
+  `_coreSpinMods.jokerChance` / `forceJokerCells` 放进盘面。计奖（`slot.evaluateWin` 的上值 1，参数 grid → 中奖线、符号、symbolsByLine）实测：
+  `J A A` 这条线算 A；整条 `J J J` 的线符号是 `Joker` → `battlefield.spawn` 出「小丑」单位（광대 / Jester）；
+  9 格全 J = 8 条 Joker 线，`isJackpotGrid` 也是 true；全 A 中间一个 J 仍是 A 的大奖。
 - 中奖线 `slot:getWinningLinesDefinition()`：3 横 + 3 竖 + 2 斜，共 8 条；9 格全同 = 大奖（`isJackpotGrid`）。
 - **结果在拉杆时就定了**：`startSpin` 先调 `slot:buildResultGrid()` 得到整盘 3×3（`pendingGrid`），再把各转轮的
   `targetFinalSymbols` 设成它，转轮动画只是滚到这个结果。所以包一层 `buildResultGrid` 改返回值，画面和结算都一致。

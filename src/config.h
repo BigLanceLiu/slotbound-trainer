@@ -32,7 +32,7 @@ struct Config {
 
     // [slot]  老虎机（经 Lua 桥，需要注入）
     bool slotJackpot = false;        // 大奖模式：每次转都是 9 格同一兵种
-    std::string slotSymbol = "A";    // W A S M H D，或 random = 每次随机一种
+    std::string slotSymbol = "A";    // W A S M H D、J（小丑），或 random = 每次随机一种普通兵种
 
     // [debug]
     bool overlay = true; // 左上角状态栏
