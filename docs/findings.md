@@ -120,6 +120,56 @@ coins（Lua 全局，真正的来源）
   没有降星流程。
 - 修改器「单位」页（`src/unitlevel.cpp`）直接调这两个函数。
 
+## 单位基础属性
+
+- 阵容单位 `u.stats = { hp, atk, aspd, distance, speed }`（另有顶层 `u.distance`），存档保存。词条的生命/攻击/攻速/射程/移速倍率
+  **已经乘进 `u.stats`**：词条变化时游戏按「新倍率 ÷ 旧倍率（`_randomOptionAtkMul` 等缓存）」调整 stats。
+- 开战 `beginBattle`（反汇编 pc 658–725）按 stats 生成战场单位 `u.allyRef`：`maxhp = max(1, floor(hp + 0.5))`、`hp = maxhp`、
+  `dmg = max(0, atk)`、`distance = distance`、`atkPeriod = 1 / max(0.05, aspd)`、`atkTicks` 由 atkPeriod 换算，打上 `_statsFromRoster`。
+- 修改器改 `u.stats[key]` → 一直有效；战斗中（`battlefield.mode == 'battle'` 且 allyRef 在 `battlefield.allies` 里）按同比例改战场单位。
+  移速不做（用户只要一直有效的四项）。升星时是否保留改过的值未验证。
+
+## 技能冷却
+
+- 技能定义 `require('src.data.skill').definitions[id]`（125 个）：`cooldown` 秒、`activationType`（active / passive）、`runtime.cooldown`（优先）、
+  `runtime.minRank`。按职业归属，`getSkillsForUnit(u)` 取单位的技能。中文名 `language.zh['skill.name.<id>']`。
+- 战场单位 `a.skill.cd` = 冷却，`a.skill.cdT` = 剩余冷却；`a.skill._randomOptionBaseCooldown` = 基础冷却。
+- `__slotApplySkillCooldownOption(a)`（开战、词条结算时调）：`a.skill.cd = 基础 × __slotGetSkillCooldownMul(a)`。
+  面板显示的 `awakening.liveCooldown(u, def)` 也乘它，再四舍五入到 0.1。两处都是每次现查 `_G`。
+- `__slotGetSkillCooldownMul(u)` 只看 22 号词条「技能加速」：每条 × `(1 - min(95, |值|)/100)`，最低 0.05。
+  **但 `RO.normalizeOption` 会把 22 号的值规整到 8/10/12/14/16% 几档**（10/15/16/17/19 号也会被规整），所以不能靠自定义词条数值改冷却。
+- 修改器做法（`luaops::kCdHookLua`）：包住全局 `__slotGetSkillCooldownMul`，在原倍率上再乘阵容单位的 `__sbSkillCdMul`；
+  传进来的是战场单位时，用阵容单位的 `allyRef` 反查（`beginBattle` 先设 allyRef（pc 630），后算 skill（pc 1102），顺序没问题）。
+  `RS.copySerializable` 不过滤字段 → `__sbSkillCdMul` 跟存档保存；修改器没开时没人包，等于原版冷却。
+  老虎机每秒的同步顺带检查包装还在不在。验证：假战场单位要 4 / 1 / 0.1 秒 → `skill.cd` 4 / 1 / 0.1，面板 4 / 1 / 0.1；不设 → 8。
+
+## 觉醒（awakening）
+
+- 面板上单位头像下的 I / II / III 图标（如「终结 III」）是觉醒，不是词条。`A = require('src.game.awakening')`。
+- 单位 `u.awakening = { version = 10, unitId = 'W09', selected = { 'W12', 'W28', 'W05' }, levels, stage, seen, pending }`。
+  职业身份 `A.identity(u)`（看 subclassKey / subclassName / sym）；`A.data.units[身份].candidates` = 这个职业的 12 个候选（`A.pool(u)`）；
+  总目录 `A.catalog(u).candidates`（177 个），定义有 `stages[1..5].text`、`values[1..5]`（如终结 W12：20/25/30/35/40）。
+  中文：`language.zh['awakening.10.<id>.name']`、`['awakening.10.<id>.<级>.text']`。
+- 节点 `A.data.milestones`：吸收 LV 30 / 60 / 100（3 星）、160（4 星）、250（5 星）；最高 3 星 → 容量 3。
+- **第 10 版等级规则**（反汇编 `A.level`）：id 在 selected 里就 = `min(5, #selected)`，`levels` 表不起作用 → 选了几个，每个就是几级。
+  `A.choose` 选一个后把所有已选的 levels 都设成 stage。`A.has` 只看 selected + 总目录，不看是不是本职业的。
+- `A.normalize(u)`：去重、只留总目录里有的、最多 5 个，重设 stage / levels；不看容量。效果（has / value）都是战斗中实时查，
+  选的时候不往 stats 里写 → 直接改 selected 安全、立即生效，存档保存。
+- 验证（合成的幻影单位）：W12/W28/W05 都是 III 级（终结 30%）→ 加 W01、W02 → 全部 V 级（终结 40%）；加第 6 个被截掉；删 1 个 → 全部 IV 级。
+- 修改器「单位 → 觉醒」子页（`src/awakening.cpp`）：只列本职业候选，新增 / 替换 / 删除，改完调 `A.normalize`。
+
+## 被动技能触发条件
+
+- 被动技能只有 10 个：闪光斩击 / 闪光乱舞（`FlashSlash`，`runtime.charges = 7` 次普攻）、梦魇连击 / 灾厄连击（`NightmareFlurry`，
+  普攻时 `chance = 0.2`、`internalCooldown = 2`）、暗影收割（击杀，`internalCooldown = 3`）、毁灭震荡（击杀，`cooldown = 5`）、
+  胜利信号 / 胜利之翼（击杀或打首领充能 4 格）、救赎之箭 / 天界归还（倒下的友军复活）。
+- 参数都从 `awakening.runtime(a)` 取：`a.primarySkillDef.runtime`（同技能单位**共用这张表**），有觉醒时合并成副本缓存在 `a._awakeningRuntime`。
+  `unit_abilities.<技能>.runtime` 每次都 `require('src.game.awakening').runtime(a)` 现取，所以包 `A.runtime` 就能覆盖。
+  例：`flash_slash.charges(a) = max(1, floor(runtime.charges 或 7))`；`onBasic` 每次普攻 `skill.flashCharge = min(charges, +1)`。
+- 修改器：单位上存 `__sbSkillRt = { charges=, chance=, internalCooldown= }`，包装返回「原参数 + 覆盖」的副本，按 (单位, 原表, 覆盖表) 缓存，
+  改设置整张换表。验证（假战场单位）：闪光乱舞 charges 7 → 1 / 3，barFill 2/3 = 0.667；梦魇连击 chance 0.2 → 1、internalCooldown 2 → 0.5；
+  共用定义仍是 7。毁灭震荡的冷却、胜利信号的充能不走 runtime 的这几个参数，没做。
+
 ## 老虎机
 
 - 状态在全局 `slot`（`src.game.slot.new` 造的对象，`package.loaded['src.game.slot']` 是类）。

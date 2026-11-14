@@ -69,6 +69,66 @@ if not u and t and t.lastSelectedRef and rawget(_G, 'battlefield') then
 end
 )lua";
 
+// 技能 hook（两个，都是「已包过就跳过」，修改器不开时没人包 = 原版）。设置都存在阵容单位表上，跟存档一起保存
+// （run_save.copySerializable 不过滤字段）。传进来的可能是战场单位：靠阵容单位的 allyRef 反查（__sbUnitField）。
+//
+// 1) 主动技能冷却：包全局 __slotGetSkillCooldownMul（算 skill.cd、面板显示冷却都每次现查 _G），
+//    在游戏原倍率上再乘单位的 __sbSkillCdMul。__sbCdHook.orig = 游戏原函数（算「不改时」的倍率）。
+// 2) 技能参数（被动技能的触发条件）：包 awakening.runtime（各技能模块每次都 require 再调它取参数），
+//    单位有覆盖表 __sbSkillRt = { charges = 1, ... } 时返回「原参数 + 覆盖」的副本；原表是同技能单位共用的，不能改。
+//    副本按 (单位, 原表, 覆盖表) 缓存，改设置时整张换新覆盖表让缓存失效。
+inline constexpr const char* kCdHookLua = R"lua(
+do
+  local function unitField(x, key)
+    if type(x) ~= 'table' then return nil end
+    local v = rawget(x, key)
+    if v ~= nil then return v end
+    local bf = rawget(_G, 'battlefield')
+    for _, r in ipairs(bf and bf.rosterUnits or {}) do
+      if r.allyRef == x then return r[key] end
+    end
+    return nil
+  end
+  rawset(_G, '__sbUnitField', unitField)
+
+  local H = rawget(_G, '__sbCdHook')
+  local cur = rawget(_G, '__slotGetSkillCooldownMul')
+  if type(cur) == 'function' and not (type(H) == 'table' and H.wrapper == cur) then
+    local orig = cur
+    H = { orig = orig }
+    function H.wrapper(x, ...)
+      local m = orig(x, ...)
+      local k = tonumber(unitField(x, '__sbSkillCdMul'))
+      if k and type(m) == 'number' then m = m * k end
+      return m
+    end
+    rawset(_G, '__sbCdHook', H)
+    rawset(_G, '__slotGetSkillCooldownMul', H.wrapper)
+  end
+
+  local A = package.loaded['src.game.awakening']
+  local R = rawget(_G, '__sbRtHook')
+  if type(A) == 'table' and type(A.runtime) == 'function' and not (type(R) == 'table' and R.wrapper == A.runtime) then
+    local orig = A.runtime
+    R = { orig = orig, cache = setmetatable({}, { __mode = 'k' }) }
+    function R.wrapper(x, ...)
+      local r = orig(x, ...)
+      local ov = unitField(x, '__sbSkillRt')
+      if type(ov) ~= 'table' or type(r) ~= 'table' or next(ov) == nil then return r end
+      local c = R.cache[x]
+      if c and c.base == r and c.ov == ov then return c.value end
+      local v = {}
+      for k, val in pairs(r) do v[k] = val end
+      for k, val in pairs(ov) do v[k] = val end
+      R.cache[x] = { base = r, ov = ov, value = v }
+      return v
+    end
+    rawset(_G, '__sbRtHook', R)
+    A.runtime = R.wrapper
+  end
+end
+)lua";
+
 // 核对选中的还是界面上显示的那个单位（防止点按钮前游戏里换了选中）
 inline std::string CheckSameUnit(const std::string& sym, int rosterIndex)
 {

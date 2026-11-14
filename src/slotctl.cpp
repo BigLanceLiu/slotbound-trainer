@@ -88,7 +88,8 @@ void SlotControl::Update(bool injected, bool jackpot, const std::string& symbol)
     lastSync_ = now;
     sentJackpot_ = jackpot;
     sentSymbol_ = symbol;
-    std::string code = Replace(kSyncLua, "JACKPOT", jackpot ? "true" : "false");
+    // 顺带每秒确认技能冷却 hook 还在（游戏重开、重新注入后靠这里装回去）
+    std::string code = std::string(kCdHookLua) + Replace(kSyncLua, "JACKPOT", jackpot ? "true" : "false");
     code = Replace(code, "SYMBOL", Quote(symbol));
     job_ = Run(std::move(code));
 }

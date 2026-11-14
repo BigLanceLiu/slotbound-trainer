@@ -20,6 +20,7 @@ set(APP_SOURCES
     src/luavar.cpp
     src/config.cpp
     src/options.cpp
+    src/awakening.cpp
     src/imprints.cpp
     src/slotctl.cpp
     src/unitlevel.cpp

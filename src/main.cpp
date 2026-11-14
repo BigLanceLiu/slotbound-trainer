@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <shellapi.h>
 
+#include <algorithm>
 #include <cfloat>
 #include <cstdio>
 #include <cstring>
@@ -14,6 +15,7 @@
 #include "bridge/injector.h"
 #include "config.h"
 #include "imgui.h"
+#include "awakening.h"
 #include "imprints.h"
 #include "luavar.h"
 #include "options.h"
@@ -721,6 +723,133 @@ void DrawImprintsBody(ImprintEditor& editor, ImprintsUi& ui)
     ImGui::EndChild();
 }
 
+// 「单位」页 → 「觉醒」子页
+struct AwakeningUi {
+    int targetSlot = 0;   // 改第几个（1 起）；0 = 新增（默认）
+    std::string unitKey;
+};
+
+std::string AwakeningEffect(const AwakeningEditor::Def* d, int level)
+{
+    if (!d || level < 1 || level > static_cast<int>(d->levels.size()))
+        return {};
+    return IconText(d->levels[level - 1]);
+}
+
+void DrawAwakeningBody(AwakeningEditor& editor, AwakeningUi& ui)
+{
+    const float scale = ImGui::GetStyle().FontScaleDpi;
+    if (!editor.Error().empty())
+        ImGui::TextColored(kRed, "%s", editor.Error().c_str());
+    const AwakeningEditor::Unit& unit = editor.Selected();
+    if (!unit.valid) {
+        ImGui::TextDisabled("正在读这个单位的觉醒…");
+        return;
+    }
+    if (!unit.hasAwakening) {
+        ImGui::TextDisabled("这个单位没有觉醒（要有职业身份，一般是 3 星选完职业以后）");
+        return;
+    }
+    static const char* kRoman[] = { "", "I", "II", "III", "IV", "V" };
+    const int count = static_cast<int>(unit.selected.size());
+    const int shownLevel = unit.level >= 0 && unit.level <= 5 ? unit.level : 0;
+    ImGui::Text("已选 %d 个，全部是 %s 级", count, kRoman[shownLevel]);
+    ImGui::SameLine();
+    ImGui::TextDisabled("（游戏容量 %d）", unit.capacity);
+    if (unit.version == 10)
+        ImGui::TextDisabled("规则：选了几个觉醒，每个就是几级，最多 5 个 = 全部 V 级。效果战斗中实时生效，存档保存，不用开着修改器");
+
+    FollowTargetSlot(ui.targetSlot, ui.unitKey, unit.sym, unit.rosterIndex, count);
+    if (ImGui::BeginTable("aslots", 4, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 44.0f * scale);
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 100.0f * scale);
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 40.0f * scale);
+        for (int i = 0; i < count; ++i) {
+            const AwakeningEditor::Def* d = editor.Find(unit.selected[i]);
+            ImGui::TableNextRow();
+            ImGui::PushID(i);
+            ImGui::TableNextColumn();
+            ImGui::RadioButton("##slot", &ui.targetSlot, i + 1);
+            ImGui::SameLine();
+            ImGui::Text("%d", i + 1);
+            ImGui::TableNextColumn();
+            ImGui::TextColored(d ? kGreen : kRed, "%s", d ? d->name.c_str() : unit.selected[i].c_str());
+            if (d && !d->inPool)
+                ImGui::TextColored(kAmber, "不是本职业的");
+            ImGui::TableNextColumn();
+            ImGui::TextWrapped("%s", AwakeningEffect(d, shownLevel).c_str());
+            ImGui::TableNextColumn();
+            ImGui::BeginDisabled(editor.Busy());
+            if (ImGui::SmallButton("删除"))
+                editor.Remove(i + 1);
+            ImGui::EndDisabled();
+            ImGui::PopID();
+        }
+        if (count < AwakeningEditor::kMaxSelected) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::RadioButton("##new", &ui.targetSlot, 0);
+            ImGui::SameLine();
+            ImGui::Text("%d", count + 1);
+            ImGui::TableNextColumn();
+            ImGui::TextDisabled("新增（默认）");
+            ImGui::TableNextColumn();
+            ImGui::TextDisabled("加一个，全部觉醒升到 %s 级", kRoman[count + 1]);
+        } else if (ui.targetSlot == 0) {
+            ui.targetSlot = 1;
+        }
+        ImGui::EndTable();
+    }
+    if (!editor.Message().empty())
+        ImGui::TextDisabled("%s", editor.Message().c_str());
+
+    SectionTitle("这个职业的觉醒");
+    TargetSlotHint(ui.targetSlot);
+    // 选了以后的等级：新增 = 个数 + 1，替换 = 个数不变
+    const int levelAfter = std::min(5, ui.targetSlot > 0 ? count : count + 1);
+    const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp;
+    if (ImGui::BeginTable("acatalog", 3, flags)) {
+        ImGui::TableSetupColumn("觉醒", ImGuiTableColumnFlags_WidthFixed, 110.0f * scale);
+        ImGui::TableSetupColumn("效果（选上以后的等级）", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 60.0f * scale);
+        ImGui::TableHeadersRow();
+        for (const AwakeningEditor::Def& d : unit.defs) {
+            if (!d.inPool)
+                continue;
+            bool owned = false;
+            for (const std::string& s : unit.selected)
+                owned |= s == d.id;
+            ImGui::TableNextRow();
+            ImGui::PushID(d.id.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextColored(owned ? kGreen : ImVec4(0.85f, 0.87f, 0.9f, 1.0f), "%s", d.name.c_str());
+            ImGui::TextDisabled("%s", d.id.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextWrapped("%s", AwakeningEffect(&d, owned ? shownLevel : levelAfter).c_str());
+            if (ImGui::IsItemHovered()) {
+                ImGui::BeginTooltip();
+                ImGui::PushTextWrapPos(420.0f * scale);
+                for (int i = 1; i <= static_cast<int>(d.levels.size()); ++i)
+                    ImGui::Text("%s 级：%s", kRoman[i], AwakeningEffect(&d, i).c_str());
+                ImGui::PopTextWrapPos();
+                ImGui::EndTooltip();
+            }
+            ImGui::TableNextColumn();
+            if (owned) {
+                ImGui::TextDisabled("已选");
+            } else {
+                ImGui::BeginDisabled(editor.Busy() || (ui.targetSlot == 0 && count >= AwakeningEditor::kMaxSelected));
+                if (ImGui::SmallButton("用这个"))
+                    editor.Set(ui.targetSlot > 0 ? ui.targetSlot : count + 1, d.id);
+                ImGui::EndDisabled();
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+}
+
 // 下一个单选框放得下就接在同一行，放不下就换行（窗口宽度 / DPI 变了也不会超出）
 void SameLineIfFits(const char* radioLabel)
 {
@@ -806,7 +935,11 @@ struct LuaTabs {
     SlotControl slot;
     UnitLevelEditor level;
     int levelInput = 1;
-    std::string levelUnitKey; // 换了单位就把输入框重置成它的当前 LV
+    double statInput[4] = {};  // 生命 / 攻击 / 攻速 / 射程 输入框
+    double cdInput = 0;        // 技能冷却输入框（秒）
+    double paramInput[3] = {}; // 被动触发条件：普攻次数 / 概率(%) / 内置冷却
+    bool paramInit[3] = {};
+    std::string levelUnitKey; // 换了单位就把输入框重置成它的当前值
     bool unitOpen = false;
     OptionEditor options;
     OptionsUi optionsUi;
@@ -814,6 +947,9 @@ struct LuaTabs {
     ImprintEditor imprints;
     ImprintsUi imprintsUi;
     bool imprintsOpen = false;
+    AwakeningEditor awakening;
+    AwakeningUi awakeningUi;
+    bool awakeningOpen = false;
 };
 
 // 「单位」页：选中单位的信息和等级，下面分「词条」「刻印」两个子页
@@ -868,6 +1004,13 @@ void DrawUnitTab(const GameProcess& game, LuaTabs& tabs)
     if (key != tabs.levelUnitKey) {
         tabs.levelUnitKey = key;
         tabs.levelInput = unit.absorbLv;
+        tabs.statInput[0] = unit.hp;
+        tabs.statInput[1] = unit.atk;
+        tabs.statInput[2] = unit.aspd;
+        tabs.statInput[3] = unit.range;
+        tabs.cdInput = unit.skillBaseCd * unit.skillCdMul;
+        for (bool& b : tabs.paramInit)
+            b = false;
     }
     ImGui::AlignTextToFramePadding();
     ImGui::Text("吸收 LV %d", unit.absorbLv);
@@ -893,6 +1036,159 @@ void DrawUnitTab(const GameProcess& game, LuaTabs& tabs)
         gates += (i ? "、" : "") + std::to_string(i + 2) + " 星 LV" + std::to_string(unit.thresholds[i]);
     ImGui::TextDisabled("LV 越高属性越高，可升可降（30 级以后成长减半，游戏规则）。升星门槛：%s；单改 LV 不会自动升星",
         gates.empty() ? "—" : gates.c_str());
+
+    // 基础属性：unit.stats，每场开战按它生成战场单位
+    SectionTitle("基础属性");
+    struct StatRow {
+        const char* key;
+        const char* label;
+        double current;
+        double minValue;
+        const char* format;
+    };
+    const StatRow rows[] = {
+        { "hp", "生命", unit.hp, 1.0, "%.0f" },
+        { "atk", "攻击", unit.atk, 0.0, "%.1f" },
+        { "aspd", "攻速", unit.aspd, 0.05, "%.2f" },
+        { "distance", "射程", unit.range, 1.0, "%.0f" },
+    };
+    if (ImGui::BeginTable("stats", 4, ImGuiTableFlags_SizingFixedFit)) {
+        for (int i = 0; i < 4; ++i) {
+            const StatRow& row = rows[i];
+            ImGui::PushID(row.key);
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::AlignTextToFramePadding();
+            char current[32];
+            snprintf(current, sizeof(current), row.format, row.current);
+            ImGui::Text("%s %s", row.label, current);
+            ImGui::TableNextColumn();
+            ImGui::SetNextItemWidth(140.0f * scale);
+            ImGui::InputDouble("##v", &tabs.statInput[i], 0.0, 0.0, row.format);
+            if (tabs.statInput[i] < row.minValue)
+                tabs.statInput[i] = row.minValue;
+            ImGui::TableNextColumn();
+            ImGui::BeginDisabled(editor.Busy());
+            if (ImGui::Button("改成这个"))
+                editor.SetStat(row.key, tabs.statInput[i], row.label);
+            ImGui::TableNextColumn();
+            if (ImGui::Button("×2")) {
+                tabs.statInput[i] = row.current * 2.0;
+                editor.SetStat(row.key, tabs.statInput[i], row.label);
+            }
+            ImGui::EndDisabled();
+            ImGui::PopID();
+        }
+        if (unit.skillKind == "active" && unit.skillBaseCd > 0) {
+            // 技能冷却：秒，最短 0.1
+            const double cur = unit.skillBaseCd * unit.skillCdMul;
+            const double minCd = UnitLevelEditor::kMinCdSeconds;
+            ImGui::PushID("skillcd");
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::AlignTextToFramePadding();
+            ImGui::Text("技能冷却 %.2f 秒%s", cur, unit.skillCdCustom ? "*" : "");
+            ImGui::TableNextColumn();
+            ImGui::SetNextItemWidth(140.0f * scale);
+            ImGui::InputDouble("##v", &tabs.cdInput, 0.0, 0.0, "%.2f");
+            if (tabs.cdInput < minCd)
+                tabs.cdInput = minCd;
+            ImGui::TableNextColumn();
+            ImGui::BeginDisabled(editor.Busy());
+            if (ImGui::Button("改成这个"))
+                editor.SetSkillCooldown(tabs.cdInput);
+            ImGui::TableNextColumn();
+            if (ImGui::Button("最短")) {
+                tabs.cdInput = minCd;
+                editor.SetSkillCooldown(minCd);
+            }
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!unit.skillCdCustom);
+            if (ImGui::Button("原版")) {
+                tabs.cdInput = unit.skillBaseCd * unit.skillNaturalMul;
+                editor.SetSkillCooldown(-1.0);
+            }
+            ImGui::EndDisabled();
+            ImGui::EndDisabled();
+            ImGui::PopID();
+        }
+        // 被动技能的触发条件
+        struct ParamUi {
+            const char* key;
+            const char* label;
+            const char* unitText;
+            double scale;      // 显示值 = 游戏值 × scale（概率显示成 %）
+            double minValue;   // 显示值下限
+            double maxValue;
+            const char* format;
+        };
+        static const ParamUi kParams[3] = {
+            { "charges", "触发所需普攻", "次", 1.0, 1.0, 1000.0, "%.0f" },
+            { "chance", "触发概率", "%", 100.0, 0.0, 100.0, "%.0f" },
+            { "internalCooldown", "内置冷却", "秒", 1.0, 0.0, 600.0, "%.2f" },
+        };
+        for (const auto& p : unit.skillParams) {
+            int idx = -1;
+            for (int i = 0; i < 3; ++i)
+                if (p.key == kParams[i].key)
+                    idx = i;
+            if (idx < 0)
+                continue;
+            const ParamUi& ui = kParams[idx];
+            if (!tabs.paramInit[idx]) {
+                tabs.paramInput[idx] = p.current * ui.scale;
+                tabs.paramInit[idx] = true;
+            }
+            const bool custom = p.current != p.base;
+            ImGui::PushID(ui.key);
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::AlignTextToFramePadding();
+            char cur[32];
+            snprintf(cur, sizeof(cur), ui.format, p.current * ui.scale);
+            ImGui::Text("%s %s %s%s", ui.label, cur, ui.unitText, custom ? "*" : "");
+            ImGui::TableNextColumn();
+            ImGui::SetNextItemWidth(140.0f * scale);
+            ImGui::InputDouble("##v", &tabs.paramInput[idx], 0.0, 0.0, ui.format);
+            if (tabs.paramInput[idx] < ui.minValue)
+                tabs.paramInput[idx] = ui.minValue;
+            if (tabs.paramInput[idx] > ui.maxValue)
+                tabs.paramInput[idx] = ui.maxValue;
+            ImGui::TableNextColumn();
+            ImGui::BeginDisabled(editor.Busy());
+            if (ImGui::Button("改成这个")) {
+                double v = tabs.paramInput[idx] / ui.scale;
+                if (idx == 0)
+                    v = static_cast<double>(static_cast<long long>(v + 0.5)); // 次数取整
+                editor.SetSkillParam(ui.key, v, false, ui.label);
+            }
+            ImGui::TableNextColumn();
+            ImGui::BeginDisabled(!custom);
+            if (ImGui::Button("原版")) {
+                tabs.paramInput[idx] = p.base * ui.scale;
+                editor.SetSkillParam(ui.key, 0, true, ui.label);
+            }
+            ImGui::EndDisabled();
+            ImGui::EndDisabled();
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    if (unit.skillKind == "active" && unit.skillBaseCd > 0)
+        ImGui::TextDisabled("技能「%s」不改时冷却 %.2f 秒（基础 %.1f 秒 × 技能加速词条）%s。最短 0.1 秒。"
+                            "改动存在存档的单位上一直有效，但要开着修改器（已注入）才起作用；不开修改器就是原版冷却",
+            unit.skillName.c_str(), unit.skillBaseCd * unit.skillNaturalMul, unit.skillBaseCd,
+            unit.skillCdCustom ? "；带 * 表示已自定义" : "");
+    else if (unit.skillKind == "passive" && !unit.skillParams.empty())
+        ImGui::TextDisabled("技能「%s」是条件触发的被动技能，上面可以改触发条件（带 * 表示已自定义）。"
+                            "改动存在存档的单位上一直有效，要开着修改器（已注入）才起作用；战斗中改当场生效",
+            unit.skillName.c_str());
+    else if (unit.skillKind == "passive")
+        ImGui::TextDisabled("技能「%s」是被动技能，触发方式（击杀 / 充能 / 复活）目前改不了", unit.skillName.c_str());
+    else
+        ImGui::TextDisabled("这个单位目前没有技能（有些技能要到指定星级才解锁）");
+    ImGui::TextDisabled("改的是存档里的基础值，一直有效；战斗中改，当前这场也按比例立即生效。词条、刻印、道具的加成照样乘在上面。"
+                        "攻速 = 每秒攻击次数");
     if (!editor.Message().empty())
         ImGui::TextDisabled("%s", editor.Message().c_str());
 
@@ -906,6 +1202,11 @@ void DrawUnitTab(const GameProcess& game, LuaTabs& tabs)
         if (ImGui::BeginTabItem("刻印")) {
             tabs.imprintsOpen = true;
             DrawImprintsBody(tabs.imprints, tabs.imprintsUi);
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("觉醒")) {
+            tabs.awakeningOpen = true;
+            DrawAwakeningBody(tabs.awakening, tabs.awakeningUi);
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
@@ -922,6 +1223,7 @@ bool DrawMenu(Config& cfg, const std::wstring& cfgPath, bool& cfgFileFound, cons
     tabs.unitOpen = false;
     tabs.optionsOpen = false;
     tabs.imprintsOpen = false;
+    tabs.awakeningOpen = false;
     ImGui::SetNextWindowSize(ImVec2(640.0f * scale, 0.0f), ImGuiCond_Always);
     ImGui::SetNextWindowPos(ImVec2(80.0f * scale, 200.0f * scale), ImGuiCond_FirstUseEver);
     ImGui::Begin("转运军团 修改器", nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings);
@@ -1120,6 +1422,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         tabs.level.Update(luaReady && tabs.unitOpen);
         tabs.options.Update(luaReady && tabs.unitOpen && tabs.optionsOpen);
         tabs.imprints.Update(luaReady && tabs.unitOpen && tabs.imprintsOpen);
+        tabs.awakening.Update(luaReady && tabs.unitOpen && tabs.awakeningOpen);
         // 老虎机控制不管菜单开没开都要保持（每秒检查包装还在不在）
         tabs.slot.Update(game.Pid() && bridge::Injected(), cfg.enabled && cfg.slotJackpot, cfg.slotSymbol);
         overlay::BeginFrame();
