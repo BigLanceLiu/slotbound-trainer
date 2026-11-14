@@ -108,6 +108,20 @@ coins（Lua 全局，真正的来源）
 - **两套「品级」**：词条稀有度 common/rare/legend（普通/稀有/传说）；单位品级 normal/advanced/rare/special/legendary/prism
   （`language.zh['grade.label.*']`：普通/高级/稀有/特殊/传说/棱彩）。`permittedGrades` 用的是单位品级。
 
+## 老虎机
+
+- 状态在全局 `slot`（`src.game.slot.new` 造的对象，`package.loaded['src.game.slot']` 是类）。
+  `slot.grid[行][列]`：当前 3×3；`slot.reelStrips[1..3]`：三条 64 格转轮带；`slot.reelStripPos`；`slot.result`（winningLines、won、_jackpot…）。
+- 符号：W 战士、A 弓手、S 枪兵、M 法师、H 骑兵、D 决斗者（王冠图标）；`J` 王牌（Joker）、`Blank` 空。
+  `buildResultGrid` 上值 4 = `{W,A,S,M,H,D}`，上值 5 按 `symbolWeights` 加权抽。
+- 中奖线 `slot:getWinningLinesDefinition()`：3 横 + 3 竖 + 2 斜，共 8 条；9 格全同 = 大奖（`isJackpotGrid`）。
+- **结果在拉杆时就定了**：`startSpin` 先调 `slot:buildResultGrid()` 得到整盘 3×3（`pendingGrid`），再把各转轮的
+  `targetFinalSymbols` 设成它，转轮动画只是滚到这个结果。所以包一层 `buildResultGrid` 改返回值，画面和结算都一致。
+  游戏自己的「核心」道具也是从这里影响：`slot._coreSpinMods` 的 `forceCells`、`forceJokerCells`、`forceWinProb`、`jokerChance`。
+- 修改器的大奖模式（`src/slotctl.cpp`）：包装读 `_G.__sbSlotCfg`，关着时原样透传；`__sbSlotWrapped`（弱键表）标记已包过的函数，
+  每秒检查一次，游戏换了 `slot` 对象就重新包。随机兵种用 `math.random`，不碰 `love.math.random`（游戏自己的随机序列）。
+  验证：直接调 `slot:buildResultGrid()`，开 H → `HHH/HHH/HHH`，`isJackpotGrid = true`；关 → 正常随机。
+
 ## 刻印（imprint）
 
 和词条是两套东西。中文界面叫「刻印」，单位面板上那个「扩散」就是刻印 `transfer`。

@@ -30,6 +30,10 @@ struct Config {
     VarConfig spins{ false, 99, 5, 0, 0 };
     VarConfig jungsu{ false, 99, 5, 0, 0 }; // 水晶（정수，精华）
 
+    // [slot]  老虎机（经 Lua 桥，需要注入）
+    bool slotJackpot = false;        // 大奖模式：每次转都是 9 格同一兵种
+    std::string slotSymbol = "A";    // W A S M H D，或 random = 每次随机一种
+
     // [debug]
     bool overlay = true; // 左上角状态栏
 

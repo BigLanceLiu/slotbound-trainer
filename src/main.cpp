@@ -19,6 +19,7 @@
 #include "options.h"
 #include "overlay.h"
 #include "process.h"
+#include "slotctl.h"
 
 #define SB_WIDEN2(x) L##x
 #define SB_WIDEN(x) SB_WIDEN2(x)
@@ -739,8 +740,74 @@ void DrawImprintsTab(const GameProcess& game, ImprintEditor& editor, ImprintsUi&
     ImGui::EndChild();
 }
 
-// 经 Lua 桥工作的几页（词条、刻印）：编辑器 + 界面状态 + 这一帧哪页开着
+// 老虎机符号 → 中文
+const char* SlotSymbolName(char c)
+{
+    switch (c) {
+    case 'W': return "战士";
+    case 'A': return "弓手";
+    case 'S': return "枪兵";
+    case 'M': return "法师";
+    case 'H': return "骑兵";
+    case 'D': return "决斗者";
+    case 'J': return "王牌";
+    case 'B': return "空";
+    }
+    return "?";
+}
+
+void DrawSlotTab(const GameProcess& game, Config& cfg, const SlotControl& slot, std::string& injectError)
+{
+    const float scale = ImGui::GetStyle().FontScaleDpi;
+    if (!DrawBridgeBar(game, injectError, "老虎机"))
+        return;
+    if (!slot.Error().empty())
+        ImGui::TextColored(kRed, "%s", slot.Error().c_str());
+
+    SectionTitle("大奖模式");
+    ToggleSwitch("每次都转出大奖", &cfg.slotJackpot, "打开后每次拉杆都是 9 格同一个兵种（游戏的大奖）；关掉恢复正常");
+    ImGui::TextDisabled("兵种：");
+    static const char* kSymbols[] = { "W", "A", "S", "M", "H", "D" };
+    for (const char* s : kSymbols) {
+        ImGui::SameLine();
+        if (ImGui::RadioButton(SlotSymbolName(s[0]), cfg.slotSymbol == s))
+            cfg.slotSymbol = s;
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("每次随机", cfg.slotSymbol == "random"))
+        cfg.slotSymbol = "random";
+
+    if (!slot.Hooked())
+        ImGui::TextDisabled("正在连接老虎机…（还在主菜单的话，进一局就好）");
+    else if (!cfg.enabled)
+        ImGui::TextColored(kAmber, "总开关是关的：大奖模式不生效");
+    else if (cfg.slotJackpot)
+        ImGui::TextColored(kGreen, "已生效：下一次拉杆就是大奖（本局已改 %d 次）", slot.Hits());
+    else
+        ImGui::TextDisabled("关闭中：转出来的和游戏原本的一样");
+    ImGui::TextDisabled("拉杆那一刻定结果，正在转的那一次不受影响。命运石的转动也会被改成大奖");
+
+    SectionTitle("当前结果");
+    const std::string& g = slot.Grid();
+    if (g.size() == 9 && ImGui::BeginTable("grid", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit)) {
+        for (int r = 0; r < 3; ++r) {
+            ImGui::TableNextRow();
+            for (int c = 0; c < 3; ++c) {
+                ImGui::TableNextColumn();
+                ImGui::Dummy(ImVec2(70.0f * scale, 0.0f));
+                ImGui::Text("%s", SlotSymbolName(g[r * 3 + c]));
+            }
+        }
+        ImGui::EndTable();
+    } else {
+        ImGui::TextDisabled("—");
+    }
+}
+
+// 经 Lua 桥工作的几页（词条、刻印、老虎机）：编辑器 + 界面状态 + 这一帧哪页开着
 struct LuaTabs {
+    SlotControl slot;
+    std::string slotInjectError;
     OptionEditor options;
     OptionsUi optionsUi;
     bool optionsOpen = false;
@@ -772,6 +839,11 @@ bool DrawMenu(Config& cfg, const std::wstring& cfgPath, bool& cfgFileFound, cons
             if (!cfg.enabled)
                 ImGui::TextColored(kAmber, "总开关是关的：修改和锁定都不生效");
             ImGui::TextDisabled("改出来的数值不会在退出修改器时恢复（本来就是想留着的）");
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("老虎机")) {
+            DrawSlotTab(game, cfg, tabs.slot, tabs.slotInjectError);
             ImGui::EndTabItem();
         }
 
@@ -956,6 +1028,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         const bool luaReady = menuOpen && game.Pid() && bridge::Injected();
         tabs.options.Update(luaReady && tabs.optionsOpen);
         tabs.imprints.Update(luaReady && tabs.imprintsOpen);
+        // 老虎机控制不管菜单开没开都要保持（每秒检查包装还在不在）
+        tabs.slot.Update(game.Pid() && bridge::Injected(), cfg.enabled && cfg.slotJackpot, cfg.slotSymbol);
         overlay::BeginFrame();
 
         if (cfg.overlay)

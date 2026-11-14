@@ -94,6 +94,14 @@ bool LoadConfig(const std::wstring& path, Config& cfg)
     LoadVar(path, L"spins", cfg.spins);
     LoadVar(path, L"jungsu", cfg.jungsu);
 
+    cfg.slotJackpot = ReadBool(path, L"slot", L"jackpot", cfg.slotJackpot);
+    const std::wstring sym = ReadStr(path, L"slot", L"symbol", L"A");
+    cfg.slotSymbol.clear();
+    for (wchar_t c : sym) // 只会是 ASCII 字母
+        cfg.slotSymbol += static_cast<char>(c);
+    if (cfg.slotSymbol.empty())
+        cfg.slotSymbol = "A";
+
     cfg.overlay = ReadBool(path, L"debug", L"overlay", cfg.overlay);
     return true;
 }
@@ -110,6 +118,9 @@ bool SaveConfig(const std::wstring& path, const Config& cfg)
     SaveVar(path, L"coins", cfg.coins);
     SaveVar(path, L"spins", cfg.spins);
     SaveVar(path, L"jungsu", cfg.jungsu);
+
+    WriteBool(path, L"slot", L"jackpot", cfg.slotJackpot);
+    WriteStr(path, L"slot", L"symbol", std::wstring(cfg.slotSymbol.begin(), cfg.slotSymbol.end()));
 
     WriteBool(path, L"debug", L"overlay", cfg.overlay);
 
