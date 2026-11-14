@@ -1,0 +1,20 @@
+# 运行时配置（含个人按键习惯）
+config/trainer.ini
+
+# 构建产物
+build/
+build-dist/
+dist/
+out/
+x64/
+*.dll
+*.exe
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+
+# IDE
+.vs/
+*.user

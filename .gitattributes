@@ -1,0 +1,2 @@
+# 源文件统一 LF（不跟随全局 core.autocrlf），免得检出后整文件换行变动
+* text=auto eol=lf
