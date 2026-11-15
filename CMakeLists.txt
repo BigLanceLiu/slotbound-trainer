@@ -12,22 +12,40 @@ option(SB_PORTABLE "Use trainer.ini next to the exe" OFF)
 
 set(IMGUI_DIR ${CMAKE_SOURCE_DIR}/third_party/imgui)
 
+# 源码分层（include 都从 src/ 写起，如 "game/options.h"）：
+#   app/     配置、快捷键
+#   core/    外部读写进程内存、LuaJIT 布局、Lua 全局数值（金币等）
+#   bridge/  注入的 DLL、注入器、命名管道客户端
+#   game/    经 Lua 桥改游戏数据的编辑器（词条、刻印、觉醒、等级、物品、老虎机）
+#   ui/      覆盖层、通用控件、菜单各页
 set(APP_SOURCES
     src/main.cpp
-    src/overlay.cpp
-    src/process.cpp
-    src/luajit.cpp
-    src/luavar.cpp
-    src/config.cpp
-    src/options.cpp
-    src/awakening.cpp
-    src/imprints.cpp
-    src/items.cpp
-    src/slotctl.cpp
-    src/unitlevel.cpp
+    src/app/config.cpp
+    src/core/process.cpp
+    src/core/luajit.cpp
+    src/core/luavar.cpp
     src/bridge/luaclient.cpp
     src/bridge/injector.cpp
     src/bridge/embedded_dll.cpp
+    src/game/lua_editor.cpp
+    src/game/options.cpp
+    src/game/imprints.cpp
+    src/game/awakening.cpp
+    src/game/items.cpp
+    src/game/unitlevel.cpp
+    src/game/slotctl.cpp
+    src/ui/overlay.cpp
+    src/ui/widgets.cpp
+    src/ui/labels.cpp
+    src/ui/menu.cpp
+    src/ui/page_resources.cpp
+    src/ui/page_unit.cpp
+    src/ui/unit_options.cpp
+    src/ui/unit_imprints.cpp
+    src/ui/unit_awakening.cpp
+    src/ui/page_items.cpp
+    src/ui/page_slot.cpp
+    src/ui/page_system.cpp
 )
 
 set(IMGUI_SOURCES
@@ -42,7 +60,7 @@ set(IMGUI_SOURCES
 # WIN32 = 窗口程序，不弹控制台
 add_executable(slotbound_trainer WIN32 ${APP_SOURCES} ${IMGUI_SOURCES})
 
-target_include_directories(slotbound_trainer PRIVATE ${IMGUI_DIR} ${IMGUI_DIR}/backends)
+target_include_directories(slotbound_trainer PRIVATE ${CMAKE_SOURCE_DIR}/src ${IMGUI_DIR} ${IMGUI_DIR}/backends)
 
 target_compile_definitions(slotbound_trainer PRIVATE
     UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
@@ -73,7 +91,7 @@ add_custom_command(
 target_sources(slotbound_trainer PRIVATE ${LUA_DLL_BLOB})
 
 # 诊断工具：命令行里定位 Lua 全局变量、打印 / 写入，开发期核对用
-add_executable(slotbound_probe src/probe.cpp src/process.cpp src/luajit.cpp)
+add_executable(slotbound_probe src/core/probe.cpp src/core/process.cpp src/core/luajit.cpp)
 target_compile_definitions(slotbound_probe PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(slotbound_probe PRIVATE /utf-8 /W4)
 

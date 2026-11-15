@@ -10,7 +10,7 @@ namespace {
 
 using namespace luaops;
 
-// 装包装（已装就跳过）+ 写设置；回：hooked/noslot  已改次数  当前 grid 9 个字母
+// 装包装（已装就跳过）+ 写设置（JACKPOT / SYMBOL 由前缀定义）；回：hooked/noslot  已改次数  当前 grid 9 个字母
 // 用 rawget/rawset 碰 _G：游戏到处用 rawget(_G, ...)，怕 _G 上有严格模式元表
 constexpr const char* kSyncLua = R"lua(
 local cfg = rawget(_G, '__sbSlotCfg')
@@ -51,14 +51,6 @@ end end
 return 'hooked\t' .. tostring(cfg.hits or 0) .. '\t' .. table.concat(cells)
 )lua";
 
-std::string Replace(std::string s, const std::string& from, const std::string& to)
-{
-    const size_t pos = s.find(from);
-    if (pos != std::string::npos)
-        s.replace(pos, from.size(), to);
-    return s;
-}
-
 } // namespace
 
 void SlotControl::Update(bool injected, bool jackpot, const std::string& symbol)
@@ -89,7 +81,7 @@ void SlotControl::Update(bool injected, bool jackpot, const std::string& symbol)
     sentJackpot_ = jackpot;
     sentSymbol_ = symbol;
     // 顺带每秒确认技能冷却 hook 还在（游戏重开、重新注入后靠这里装回去）
-    std::string code = std::string(kCdHookLua) + Replace(kSyncLua, "JACKPOT", jackpot ? "true" : "false");
-    code = Replace(code, "SYMBOL", Quote(symbol));
+    std::string code = std::string(kCdHookLua) + "local JACKPOT, SYMBOL = " + (jackpot ? "true" : "false") + ", " +
+        Quote(symbol) + "\n" + kSyncLua;
     job_ = Run(std::move(code));
 }

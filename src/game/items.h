@@ -1,10 +1,9 @@
 #pragma once
 
-#include <future>
 #include <string>
 #include <vector>
 
-#include "bridge/luaclient.h"
+#include "lua_editor.h"
 
 // 物品（商店里买的那些，背包在战场下方）编辑：经游戏内的 slotbound_lua.dll 执行 Lua。
 //
@@ -14,13 +13,14 @@
 //   买新的：复制、level = 1、updateEffectString、插到末尾；买重复的：level = min(maxLevel, level + 1)
 //   getItemInventoryCapacity() = min(8, 6 + 加成)：游戏买新物品时按它判断满没满
 //   效果都是战斗中实时查 _itemPurchased（没有 apply 一类的钩子）→ 直接改列表就生效，存档按 id + level 恢复
-class ItemEditor {
+class ItemEditor : public LuaEditor {
 public:
     struct Def {
-        std::string id, name, type, rarity, stage;
+        std::string id, name, type, rarity;
+        std::string stage;               // 只在某一关出的物品：关卡号；所有关都出 = 空
         int price = 0, maxLevel = 1;
         bool unlocked = true;            // initiallyUnlocked（没解锁的商店里不出）
-        std::vector<std::string> levels; // 每级效果（中文），下标 0 = 1 级
+        std::vector<std::string> levels; // 每级效果（中文，图标已换成文字），下标 0 = 1 级
     };
     struct Owned {
         int index = 0;                   // 1 起
@@ -28,35 +28,29 @@ public:
         int level = 1, maxLevel = 1;
     };
 
-    // 每帧调用：visible 时每 0.5 秒刷新背包，第一次连上时读物品目录
-    void Update(bool visible);
-
     // 放进背包：已有同 id 的就把它改成 level 级，没有就新增一件
     void Add(const std::string& id, int level);
     void SetLevel(int index, const std::string& id, int level);
     void Remove(int index, const std::string& id);
-    void ReloadCatalog() { catalog_.clear(); }
 
-    bool Busy() const { return action_.valid(); }
     bool Loaded() const { return loaded_; }
-    const std::vector<Def>& Catalog() const { return catalog_; }
-    const Def* Find(const std::string& id) const;
+    const std::vector<Def>& Catalog() const { return catalog_.All(); }
+    const Def* Find(const std::string& id) const { return catalog_.Find(id); }
     const std::vector<Owned>& Inventory() const { return inventory_; }
     int Capacity() const { return capacity_; }
-    const std::string& Message() const { return message_; }
-    const std::string& Error() const { return error_; }
+    // 背包里这件物品的等级；没有 = 0
+    int OwnedLevel(const std::string& id) const;
 
 private:
-    void Act(std::string code, std::string message);
+    std::string PollCode() const override;
+    void OnPoll(const bridge::Result& r) override;
+    const char* CatalogCode() const override;
+    const char* CatalogName() const override { return "物品目录"; }
+    void OnCatalog(const std::string& text) override;
+    std::string ActionError(const bridge::Result& r) const override;
 
-    std::future<bridge::Result> catalogJob_;
-    std::future<bridge::Result> invJob_;
-    std::future<bridge::Result> action_;
-    std::vector<Def> catalog_;
+    DefTable<Def> catalog_;
     std::vector<Owned> inventory_;
     int capacity_ = 6;
     bool loaded_ = false;
-    std::string message_;
-    std::string error_;
-    unsigned long long lastPoll_ = 0;
 };

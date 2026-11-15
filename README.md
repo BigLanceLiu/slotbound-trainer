@@ -100,14 +100,31 @@
 
 ```
 src/
-  main.cpp      主循环、菜单、状态栏
-  luavar.*      一个 Lua 全局数值（金币、旋转次数）：后台定位、每帧核对、改/锁
-  luajit.*      LuaJIT 2.1 GC64 内存布局 + 按名字定位全局变量
-  process.*     进程连接、读写（写权限按需申请）
-  overlay.*     透明覆盖层（D3D11 + ImGui，定制主题）
-  config.*      trainer.ini 读写
-  probe.cpp     命令行定位工具
+  main.cpp            主循环：连游戏、快捷键、自动保存、按需重画覆盖层
+  app/                config.*（trainer.ini 读写）、hotkeys.h（全局快捷键）
+  core/               外部读写，不注入
+    process.*           进程连接、读写（写权限按需申请）
+    luajit.*            LuaJIT 2.1 GC64 内存布局 + 按名字定位全局变量
+    luavar.*            一个 Lua 全局数值（金币 / 旋转 / 水晶）：后台定位、每帧核对、改 / 锁
+    probe.cpp           命令行定位工具
+  bridge/             注入：bridge_dll.cpp（游戏里的 DLL）、injector.*、luaclient.*（命名管道）、embedded_dll.*
+  game/               经 Lua 桥改游戏数据
+    lua_editor.*        编辑器公共骨架：目录（读一次）+ 轮询（0.5 秒）+ 改动（一次一个）
+    luaops.h            Lua 片段和小工具：选中单位、技能 hook、引号转义、图标文字
+    options / imprints / awakening / unitlevel / items   词条、刻印、觉醒、等级属性技能、物品
+    slotctl.*           老虎机大奖模式
+  ui/                 界面
+    overlay.*           透明覆盖层（D3D11 + ImGui，定制主题）
+    widgets.*           通用控件（开关、按键绑定、等级下拉框、分组标题…）
+    labels.*            品级 / 稀有度 / 老虎机符号 → 中文和颜色
+    menu.*              菜单窗口、各页的刷新调度
+    page_*.cpp          资源、单位、物品、老虎机、诊断 / 设置
+    unit_*.cpp          单位页下的词条、刻印、觉醒子页
 config/trainer.example.ini
 docs/plan.md      分阶段计划
 docs/findings.md  逆向记录
 ```
+
+加一页：`ui/pages.h` 声明画法、在 `ui/page_xxx.cpp` 里实现、`ui/menu.cpp` 的 `kTabs` 加一行；
+要读写游戏数据就在 `game/` 里继承 `LuaEditor`，写 `PollCode` / `OnPoll`（有目录再写 `CatalogCode` / `OnCatalog`），
+然后在 `ui::LuaPages` 里加成员、`LuaPages::Update` 里按页面可见性调 `Update`。

@@ -1,7 +1,6 @@
 #include "items.h"
 
-#include <windows.h>
-
+#include <algorithm>
 #include <cstdlib>
 
 #include "luaops.h"
@@ -53,89 +52,73 @@ std::string CheckSlot(int index, const std::string& id)
 
 } // namespace
 
-const ItemEditor::Def* ItemEditor::Find(const std::string& id) const
+int ItemEditor::OwnedLevel(const std::string& id) const
 {
-    for (const Def& d : catalog_)
-        if (d.id == id)
-            return &d;
-    return nullptr;
+    for (const Owned& o : inventory_)
+        if (o.id == id)
+            return o.level;
+    return 0;
 }
 
-void ItemEditor::Update(bool visible)
+const char* ItemEditor::CatalogCode() const
 {
-    if (Ready(catalogJob_)) {
-        const bridge::Result r = catalogJob_.get();
-        if (!r.ok) {
-            error_ = "读物品目录失败：" + r.text;
-        } else {
-            catalog_.clear();
-            for (const std::string& line : Split(r.text, '\n')) {
-                const auto f = Split(line, kFs);
-                if (f.size() < 9)
-                    continue;
-                Def d;
-                d.id = f[0];
-                d.name = f[1];
-                d.type = f[2];
-                d.rarity = f[3];
-                d.price = atoi(f[4].c_str());
-                d.maxLevel = atoi(f[5].c_str());
-                d.unlocked = f[6] == "1";
-                d.stage = f[7];
-                d.levels = Split(f[8], '|');
-                catalog_.push_back(std::move(d));
-            }
-            error_.clear();
-        }
-    }
-    if (Ready(invJob_)) {
-        const bridge::Result r = invJob_.get();
-        if (r.ok && r.text != "noui") {
-            const auto lines = Split(r.text, '\n');
-            capacity_ = atoi(lines[0].c_str());
-            inventory_.clear();
-            for (size_t i = 1; i < lines.size(); ++i) {
-                const auto f = Split(lines[i], kFs);
-                if (f.size() >= 4)
-                    inventory_.push_back({ atoi(f[0].c_str()), f[1], atoi(f[2].c_str()), atoi(f[3].c_str()) });
-            }
-            loaded_ = true;
-            error_.clear();
-        } else if (!r.ok) {
-            error_ = r.text;
-        }
-    }
-    if (Ready(action_)) {
-        const bridge::Result r = action_.get();
-        if (!r.ok)
-            message_ = "失败：" + r.text;
-        else if (r.text == "changed")
-            message_ = "失败：背包变了（游戏里刚买 / 卖了东西），请看一眼再点";
-        else if (r.text != "ok")
-            message_ = "失败：" + r.text;
-        lastPoll_ = 0;
-    }
-
-    if (!visible)
-        return;
-    if (catalog_.empty() && !catalogJob_.valid())
-        catalogJob_ = Run(kCatalogLua);
-    const ULONGLONG now = GetTickCount64();
-    if (!invJob_.valid() && !action_.valid() && now - lastPoll_ >= 500) {
-        lastPoll_ = now;
-        invJob_ = Run(kInventoryLua);
-    }
+    return kCatalogLua;
 }
 
-void ItemEditor::Act(std::string code, std::string message)
+void ItemEditor::OnCatalog(const std::string& text)
 {
-    message_ = std::move(message);
-    action_ = Run(std::move(code));
+    std::vector<Def> defs;
+    for (const std::string& line : Split(text, '\n')) {
+        const auto f = Split(line, kFs);
+        if (f.size() < 9)
+            continue;
+        Def d;
+        d.id = f[0];
+        d.name = f[1];
+        d.type = f[2];
+        d.rarity = f[3];
+        d.price = atoi(f[4].c_str());
+        d.maxLevel = std::max(1, atoi(f[5].c_str()));
+        d.unlocked = f[6] == "1";
+        d.stage = f[7] == "all" || f[7] == "nil" ? std::string() : f[7];
+        d.levels = LevelTexts(f[8]);
+        defs.push_back(std::move(d));
+    }
+    catalog_.Assign(std::move(defs));
+}
+
+std::string ItemEditor::PollCode() const
+{
+    return kInventoryLua;
+}
+
+void ItemEditor::OnPoll(const bridge::Result& r)
+{
+    if (!r.ok || r.text == "noui")
+        return; // 读不到时保留上一次的背包
+    const auto lines = Split(r.text, '\n');
+    capacity_ = atoi(lines[0].c_str());
+    inventory_.clear();
+    for (size_t i = 1; i < lines.size(); ++i) {
+        const auto f = Split(lines[i], kFs);
+        if (f.size() >= 4)
+            inventory_.push_back({ atoi(f[0].c_str()), f[1], atoi(f[2].c_str()), std::max(1, atoi(f[3].c_str())) });
+    }
+    loaded_ = true;
+}
+
+std::string ItemEditor::ActionError(const bridge::Result& r) const
+{
+    if (r.ok && r.text == "changed")
+        return "失败：背包变了（游戏里刚买 / 卖了东西），请看一眼再点";
+    if (!r.ok || r.text != "ok")
+        return "失败：" + r.text;
+    return {};
 }
 
 void ItemEditor::Add(const std::string& id, int level)
 {
-    if (action_.valid())
+    if (Busy())
         return;
     // 照游戏购买的做法：复制定义、设等级、刷新效果文字、插到末尾、分配面板键 'p' .. _itemPanelNextId
     std::string code =
@@ -164,17 +147,14 @@ void ItemEditor::Add(const std::string& id, int level)
         "ui._itemPanelNextId = n + 1\n"
         "return 'ok'\n";
     const Def* d = Find(id);
-    const std::string name = d ? d->name : id;
-    bool owned = false;
-    for (const Owned& o : inventory_)
-        owned |= o.id == id;
-    Act(std::move(code), (owned ? "已把「" + name + "」改成 " : "已放进背包：「" + name + "」") +
-                             (owned ? std::to_string(level) + " 级" : " " + std::to_string(level) + " 级"));
+    const std::string name = "「" + (d ? d->name : id) + "」";
+    const std::string lv = std::to_string(level) + " 级";
+    Act(std::move(code), OwnedLevel(id) > 0 ? "已把" + name + "改成 " + lv : "已放进背包：" + name + " " + lv);
 }
 
 void ItemEditor::SetLevel(int index, const std::string& id, int level)
 {
-    if (action_.valid())
+    if (Busy())
         return;
     std::string code = CheckSlot(index, id) +
         "local maxL = math.max(1, math.floor(tonumber(o.maxLevel) or 1))\n"
@@ -187,7 +167,7 @@ void ItemEditor::SetLevel(int index, const std::string& id, int level)
 
 void ItemEditor::Remove(int index, const std::string& id)
 {
-    if (action_.valid())
+    if (Busy())
         return;
     // 背包和面板键是两条并行的列表，一起删
     std::string code = CheckSlot(index, id) +

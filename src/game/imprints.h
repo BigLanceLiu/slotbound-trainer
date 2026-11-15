@@ -1,10 +1,9 @@
 #pragma once
 
-#include <future>
 #include <string>
 #include <vector>
 
-#include "bridge/luaclient.h"
+#include "lua_editor.h"
 
 // 刻印（imprint）编辑：经游戏内的 slotbound_lua.dll 在游戏主线程执行 Lua。
 //
@@ -14,11 +13,11 @@
 //   unit.imprints[i]       实例：定义字段摊平 + level、maxLevel、rarity、stats（= levels[level].stats 同一张表）、desc
 //   unit.maxImprintSlots   槽数；只在单位品级变化时按 slots 表重设，不会删掉多出来的刻印
 //   战斗效果 pairs(unit.imprints) 按 id 匹配、按 level 取数值 → 数量没有上限
-class ImprintEditor {
+class ImprintEditor : public LuaEditor {
 public:
     struct Def {
         std::string id, name, tag;
-        std::vector<std::string> levels; // 每级效果（中文），下标 0 = 1 级
+        std::vector<std::string> levels; // 每级效果（中文，图标已换成文字），下标 0 = 1 级
     };
     struct Slot {
         int index = 0; // 1 起
@@ -33,31 +32,22 @@ public:
         std::vector<Slot> slots;
     };
 
-    // 每帧调用：收后台结果；visible 时每 0.5 秒刷新一次选中单位，第一次连上时读刻印目录
-    void Update(bool visible);
-
     // 把 slot（1 起；= 现有数量 + 1 表示新增）设成 id 的 level 级刻印；槽数不够时自动加到够
     void Set(int slot, const std::string& id, int level);
     void Remove(int slot);
     void SetMaxSlots(int slots);
-    void ReloadCatalog() { catalog_.clear(); }
 
-    bool Busy() const { return action_.valid(); }
-    const std::vector<Def>& Catalog() const { return catalog_; }
-    const Def* Find(const std::string& id) const;
+    const std::vector<Def>& Catalog() const { return catalog_.All(); }
+    const Def* Find(const std::string& id) const { return catalog_.Find(id); }
     const Unit& Selected() const { return unit_; }
-    const std::string& Message() const { return message_; }
-    const std::string& Error() const { return error_; }
 
 private:
-    void Act(std::string code, std::string message);
+    std::string PollCode() const override;
+    void OnPoll(const bridge::Result& r) override;
+    const char* CatalogCode() const override;
+    const char* CatalogName() const override { return "刻印目录"; }
+    void OnCatalog(const std::string& text) override;
 
-    std::future<bridge::Result> catalogJob_;
-    std::future<bridge::Result> unitJob_;
-    std::future<bridge::Result> action_;
-    std::vector<Def> catalog_;
+    DefTable<Def> catalog_;
     Unit unit_;
-    std::string message_;
-    std::string error_;
-    unsigned long long lastPoll_ = 0;
 };

@@ -1,8 +1,5 @@
 #include "unitlevel.h"
 
-#include <windows.h>
-
-#include <cstdio>
 #include <cstdlib>
 
 #include "luaops.h"
@@ -26,6 +23,15 @@ return table.concat({ tostring(u.sym), tostring(u.grade), tostring(u.rank or 1),
   tostring(u.pendingRank or 0), tostring(u.subclassName or ''),
   tostring(st.hp or 0), tostring(st.atk or 0), tostring(st.aspd or 0), tostring(st.distance or 0),
   __sbSkillInfo(u) }, FS)
+)lua";
+
+// 选中单位对应的战场单位：战斗中、还在 allies 里才算 → a（可能是 nil）、live
+constexpr const char* kLiveAllyLua = R"lua(
+local a = u.allyRef
+local live = false
+if type(a) == 'table' and battlefield.mode == 'battle' then
+  for _, x in ipairs(battlefield.allies or {}) do if x == a then live = true break end end
+end
 )lua";
 
 // 技能信息：主动技能名 / 基础冷却 / 冷却倍率；被动技能只给名字
@@ -65,80 +71,63 @@ end
 
 } // namespace
 
-void UnitLevelEditor::Update(bool visible)
+std::string UnitLevelEditor::PollCode() const
 {
-    if (Ready(unitJob_)) {
-        const bridge::Result r = unitJob_.get();
-        unit_ = {};
-        if (r.ok && r.text != "none") {
-            const auto f = Split(r.text, kFs);
-            if (f.size() >= 16) {
-                unit_.valid = true;
-                unit_.sym = f[0];
-                unit_.grade = f[1];
-                unit_.rank = atoi(f[2].c_str());
-                unit_.rosterIndex = atoi(f[3].c_str());
-                unit_.locked = f[4] == "locked";
-                unit_.absorbLv = atoi(f[5].c_str());
-                unit_.maxRank = atoi(f[6].c_str());
-                if (!f[7].empty())
-                    for (const std::string& t : Split(f[7], ','))
-                        unit_.thresholds.push_back(atoi(t.c_str()));
-                unit_.needsClassSelect = f[8] == "1";
-                unit_.pendingRank = atoi(f[9].c_str());
-                unit_.subclass = f[10];
-                unit_.hp = atof(f[11].c_str());
-                unit_.atk = atof(f[12].c_str());
-                unit_.aspd = atof(f[13].c_str());
-                unit_.range = atof(f[14].c_str());
-                const auto s = Split(f[15], '|');
-                unit_.skillKind = s[0];
-                if (s.size() >= 2)
-                    unit_.skillName = s[1];
-                if (unit_.skillKind == "passive" && s.size() >= 3 && !s[2].empty()) {
-                    for (const std::string& item : Split(s[2], ';')) {
-                        const auto p = Split(item, ':');
-                        if (p.size() >= 3)
-                            unit_.skillParams.push_back({ p[0], atof(p[1].c_str()), atof(p[2].c_str()) });
-                    }
-                }
-                if (s.size() >= 6) {
-                    unit_.skillBaseCd = atof(s[2].c_str());
-                    unit_.skillCdMul = atof(s[3].c_str());
-                    unit_.skillNaturalMul = atof(s[4].c_str());
-                    unit_.skillCdCustom = s[5] == "1";
-                }
-            }
-            error_.clear();
-        } else if (!r.ok) {
-            error_ = r.text;
-        }
-    }
-    if (Ready(action_)) {
-        const std::string err = ActionError(action_.get());
-        if (!err.empty())
-            message_ = err;
-        lastPoll_ = 0;
-    }
-
-    if (!visible)
-        return;
-    const ULONGLONG now = GetTickCount64();
-    if (!unitJob_.valid() && !action_.valid() && now - lastPoll_ >= 500) {
-        lastPoll_ = now;
-        unitJob_ = Run(std::string(kCdHookLua) + kResolveUnit + kSkillInfoLua + kUnitLua);
-    }
+    // 顺带装技能 hook（已装就跳过），读到的冷却倍率才含修改器的自定义
+    return std::string(kCdHookLua) + kResolveUnit + kSkillInfoLua + kUnitLua;
 }
 
-void UnitLevelEditor::Act(std::string code, std::string message)
+void UnitLevelEditor::OnPoll(const bridge::Result& r)
 {
-    message_ = std::move(message);
-    action_ = Run(std::move(code));
+    unit_ = {};
+    if (!r.ok || r.text == "none")
+        return;
+    const auto f = Split(r.text, kFs);
+    if (f.size() < 16)
+        return;
+    unit_.valid = true;
+    unit_.sym = f[0];
+    unit_.grade = f[1];
+    unit_.rank = atoi(f[2].c_str());
+    unit_.rosterIndex = atoi(f[3].c_str());
+    unit_.locked = f[4] == "locked";
+    unit_.absorbLv = atoi(f[5].c_str());
+    unit_.maxRank = atoi(f[6].c_str());
+    if (!f[7].empty())
+        for (const std::string& t : Split(f[7], ','))
+            unit_.thresholds.push_back(atoi(t.c_str()));
+    unit_.needsClassSelect = f[8] == "1";
+    unit_.pendingRank = atoi(f[9].c_str());
+    unit_.subclass = f[10];
+    unit_.hp = atof(f[11].c_str());
+    unit_.atk = atof(f[12].c_str());
+    unit_.aspd = atof(f[13].c_str());
+    unit_.range = atof(f[14].c_str());
+
+    // 技能："active|名字|基础秒|总倍率|游戏原倍率|是否自定义"、"passive|名字|key:原值:现值;..."、"none"
+    const auto s = Split(f[15], '|');
+    if (s.size() >= 2)
+        unit_.skillName = s[1];
+    if (s[0] == "active" && s.size() >= 6) {
+        unit_.skill = SkillKind::Active;
+        unit_.skillBaseCd = atof(s[2].c_str());
+        unit_.skillCdMul = atof(s[3].c_str());
+        unit_.skillNaturalMul = atof(s[4].c_str());
+        unit_.skillCdCustom = s[5] == "1";
+    } else if (s[0] == "passive") {
+        unit_.skill = SkillKind::Passive;
+        if (s.size() >= 3 && !s[2].empty())
+            for (const std::string& item : Split(s[2], ';')) {
+                const auto p = Split(item, ':');
+                if (p.size() >= 3)
+                    unit_.skillParams.push_back({ p[0], atof(p[1].c_str()), atof(p[2].c_str()) });
+            }
+    }
 }
 
 void UnitLevelEditor::SetLevel(int level)
 {
-    if (action_.valid() || !unit_.valid || level < 1)
+    if (Busy() || !unit_.valid || level < 1)
         return;
     std::string code = CheckSameUnit(unit_.sym, unit_.rosterIndex) +
         "local f = rawget(_G, '__slotSetAwakeningLevel')\n"
@@ -150,10 +139,9 @@ void UnitLevelEditor::SetLevel(int level)
 
 void UnitLevelEditor::SetStat(const char* key, double value, const char* label)
 {
-    if (action_.valid() || !unit_.valid)
+    if (Busy() || !unit_.valid)
         return;
-    char num[32];
-    snprintf(num, sizeof(num), "%.6g", value);
+    const std::string num = Number(value);
     // 开战时游戏的换算（反汇编 beginBattle）：maxhp = floor(hp + 0.5)、dmg = atk、distance = distance、
     // atkPeriod = 1 / max(0.05, aspd)、atkTicks = max(1, floor(atkPeriod * 60 + 0.5))
     std::string code = CheckSameUnit(unit_.sym, unit_.rosterIndex) +
@@ -162,13 +150,9 @@ void UnitLevelEditor::SetStat(const char* key, double value, const char* label)
         "local key, new = " + Quote(key) + ", " + num + "\n"
         "local old = tonumber(st[key]) or 0\n"
         "st[key] = new\n"
-        "if key == 'distance' then u.distance = new end\n"
-        "local a = u.allyRef\n"
-        "local live = false\n"
-        "if type(a) == 'table' and battlefield.mode == 'battle' and old > 0 then\n"
-        "  for _, x in ipairs(battlefield.allies or {}) do if x == a then live = true end end\n"
-        "end\n"
-        "if live and not a.dying then\n"
+        "if key == 'distance' then u.distance = new end\n" +
+        kLiveAllyLua +
+        "if live and old > 0 and not a.dying then\n"
         "  local r = new / old\n"
         "  if key == 'hp' then\n"
         "    local frac = (a.maxhp and a.maxhp > 0) and (a.hp or a.maxhp) / a.maxhp or 1\n"
@@ -189,13 +173,12 @@ void UnitLevelEditor::SetStat(const char* key, double value, const char* label)
 
 void UnitLevelEditor::SetSkillCooldown(double seconds)
 {
-    if (action_.valid() || !unit_.valid || unit_.skillKind != "active" || unit_.skillBaseCd <= 0)
+    if (Busy() || !unit_.valid || unit_.skill != SkillKind::Active || unit_.skillBaseCd <= 0)
         return;
     const bool reset = seconds < 0; // 负数 = 恢复原版
     if (!reset && seconds < kMinCdSeconds)
         seconds = kMinCdSeconds;
-    char num[32];
-    snprintf(num, sizeof(num), "%.6g", seconds);
+    const std::string num = Number(seconds);
     // 游戏原倍率（技能加速词条，词条数值被游戏规整到 8~16% 几档，没法任意定）× 我们的 __sbSkillCdMul（见 luaops kCdHookLua）。
     // 按「想要的秒数 ÷ (基础 × 游戏原倍率)」算出 __sbSkillCdMul 存在单位上 → 跟存档走，一直有效。
     std::string code = std::string(kCdHookLua) + CheckSameUnit(unit_.sym, unit_.rosterIndex) +
@@ -203,14 +186,10 @@ void UnitLevelEditor::SetSkillCooldown(double seconds)
         "if type(H) ~= 'table' then return '游戏里找不到 __slotGetSkillCooldownMul' end\n" +
         (reset ? std::string("u.__sbSkillCdMul = nil\n")
                : "local nat = tonumber(H.orig(u)) or 1\n"
-                 "local m = " + std::string(num) + " / (" + std::to_string(unit_.skillBaseCd) + " * nat)\n"
+                 "local m = " + num + " / (" + Number(unit_.skillBaseCd) + " * nat)\n"
                  "if math.abs(m - 1) < 0.0005 then u.__sbSkillCdMul = nil else u.__sbSkillCdMul = m end\n") +
         // 战斗中：让游戏按新倍率重算战场单位的 skill.cd，剩余冷却不超过新冷却
-        "local a = u.allyRef\n"
-        "local live = false\n"
-        "if type(a) == 'table' and battlefield.mode == 'battle' then\n"
-        "  for _, x in ipairs(battlefield.allies or {}) do if x == a then live = true end end\n"
-        "end\n"
+        kLiveAllyLua +
         "if live and type(a.skill) == 'table' then\n"
         "  local apply = rawget(_G, '__slotApplySkillCooldownOption')\n"
         "  if type(apply) == 'function' then apply(a) end\n"
@@ -224,15 +203,14 @@ void UnitLevelEditor::SetSkillCooldown(double seconds)
 
 void UnitLevelEditor::SetSkillParam(const std::string& key, double value, bool reset, const std::string& label)
 {
-    if (action_.valid() || !unit_.valid || unit_.skillKind != "passive")
+    if (Busy() || !unit_.valid || unit_.skill != SkillKind::Passive)
         return;
-    char num[32];
-    snprintf(num, sizeof(num), "%.6g", value);
+    const std::string num = Number(value);
     // 整张换新覆盖表：awakening.runtime 包装按覆盖表身份缓存副本，换表 = 缓存失效（战斗中也马上用新值）
     std::string code = std::string(kCdHookLua) + CheckSameUnit(unit_.sym, unit_.rosterIndex) +
         "local ov = {}\n"
         "if type(u.__sbSkillRt) == 'table' then for k, v in pairs(u.__sbSkillRt) do ov[k] = v end end\n"
-        "ov[" + Quote(key) + "] = " + (reset ? std::string("nil") : std::string(num)) + "\n"
+        "ov[" + Quote(key) + "] = " + (reset ? std::string("nil") : num) + "\n"
         "u.__sbSkillRt = next(ov) and ov or nil\n"
         "return 'ok'\n";
     Act(std::move(code), reset ? label + "已恢复原版" : label + "已改成 " + num + "（存档里一直有效，要开着修改器；战斗中当场生效）");
@@ -240,7 +218,7 @@ void UnitLevelEditor::SetSkillParam(const std::string& key, double value, bool r
 
 void UnitLevelEditor::RaiseRank(int rank)
 {
-    if (action_.valid() || !unit_.valid || rank <= unit_.rank)
+    if (Busy() || !unit_.valid || rank <= unit_.rank)
         return;
     std::string code = CheckSameUnit(unit_.sym, unit_.rosterIndex) +
         "local f = rawget(_G, '__slotStoneRaiseRank')\n"

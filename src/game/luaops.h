@@ -1,10 +1,13 @@
 #pragma once
 
-// 经 Lua 桥在游戏里执行代码的公共小工具（词条页、刻印页共用）
+// 经 Lua 桥在游戏里执行代码的公共小工具（各编辑器共用）
 
 #include <chrono>
+#include <cstdio>
+#include <cstring>
 #include <future>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "bridge/luaclient.h"
@@ -42,6 +45,38 @@ inline std::string Quote(const std::string& s)
         out += c;
     }
     return out + "\"";
+}
+
+// Lua 数字字面量（也用在提示文字里，%.6g 够看）
+inline std::string Number(double v)
+{
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.6g", v);
+    return buf;
+}
+
+// 效果文字里的 {atk.png} 之类是游戏内图标，换成文字。解析目录时做一次，界面每帧直接用
+inline std::string IconText(std::string s)
+{
+    static const std::pair<const char*, const char*> kIcons[] = {
+        { "{atk.png}", "攻击" }, { "{hp.png}", "生命" }, { "{aspd.png}", "攻速" }, { "{dist.png}", "射程" },
+        { "{gold.png}", "金币" }, { "{essence.png}", "水晶" },
+    };
+    if (s.find('{') == std::string::npos)
+        return s;
+    for (const auto& [from, to] : kIcons)
+        for (size_t pos; (pos = s.find(from)) != std::string::npos;)
+            s.replace(pos, std::strlen(from), to);
+    return s;
+}
+
+// 各级效果（| 分隔）→ 图标换好的列表
+inline std::vector<std::string> LevelTexts(const std::string& joined)
+{
+    std::vector<std::string> out = Split(joined, '|');
+    for (std::string& s : out)
+        s = IconText(std::move(s));
+    return out;
 }
 
 inline bool Ready(std::future<bridge::Result>& f)

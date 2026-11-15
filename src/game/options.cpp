@@ -1,7 +1,5 @@
 #include "options.h"
 
-#include <windows.h>
-
 #include <cstdlib>
 
 #include "luaops.h"
@@ -97,83 +95,61 @@ return table.concat(out, '\n')
 
 } // namespace
 
-const OptionEditor::Def* OptionEditor::Find(const std::string& id) const
+const char* OptionEditor::CatalogCode() const
 {
-    for (const Def& d : catalog_)
-        if (d.id == id)
-            return &d;
-    return nullptr;
+    return kCatalogLua;
 }
 
-void OptionEditor::Update(bool visible)
+void OptionEditor::OnCatalog(const std::string& text)
 {
-    if (Ready(catalogJob_)) {
-        const bridge::Result r = catalogJob_.get();
-        if (!r.ok) {
-            error_ = "读词条目录失败：" + r.text;
-        } else {
-            catalog_.clear();
-            for (const std::string& line : Split(r.text, '\n')) {
-                const auto f = Split(line, kFs);
-                if (f.size() < 8)
-                    continue;
-                Def d{ f[0], f[1], f[2], f[3], f[4], f[6], f[5] != "0", {} };
-                if (!f[7].empty())
-                    for (const std::string& v : Split(f[7], '|')) {
-                        const size_t colon = v.rfind(':');
-                        d.variants.push_back({ v.substr(0, colon), colon == std::string::npos ? 0 : atof(v.c_str() + colon + 1) });
-                    }
-                catalog_.push_back(std::move(d));
+    std::vector<Def> defs;
+    for (const std::string& line : Split(text, '\n')) {
+        const auto f = Split(line, kFs);
+        if (f.size() < 8)
+            continue;
+        Def d{ f[0], f[1], f[2], f[3], IconText(f[4]), f[6], f[5] != "0", {} };
+        if (!f[7].empty())
+            for (const std::string& v : Split(f[7], '|')) {
+                const size_t colon = v.rfind(':');
+                d.variants.push_back({ v.substr(0, colon), colon == std::string::npos ? 0 : atof(v.c_str() + colon + 1) });
             }
-            error_.clear();
-        }
+        defs.push_back(std::move(d));
     }
-    if (Ready(unitJob_)) {
-        const bridge::Result r = unitJob_.get();
-        unit_ = {};
-        if (r.ok && r.text != "none") {
-            const auto lines = Split(r.text, '\n');
-            const auto head = Split(lines[0], kFs);
-            if (head.size() >= 4) {
-                unit_.valid = true;
-                unit_.sym = head[0];
-                unit_.grade = head[1];
-                unit_.rank = atoi(head[2].c_str());
-                unit_.rosterIndex = atoi(head[3].c_str());
-                unit_.locked = head.size() < 5 || head[4] == "locked";
-                for (size_t i = 1; i < lines.size(); ++i) {
-                    const auto f = Split(lines[i], kFs);
-                    if (f.size() >= 4 && f[0] == "S")
-                        unit_.slots.push_back({ atoi(f[1].c_str()), f[2], f[3] });
-                    else if (f.size() >= 4 && f[0] == "E")
-                        unit_.fit[f[1]] = { f[2], atoi(f[3].c_str()) };
-                }
-            }
-        } else if (!r.ok) {
-            error_ = r.text;
-        }
-    }
-    if (Ready(action_)) {
-        const std::string err = ActionError(action_.get());
-        if (!err.empty())
-            message_ = err;
-        lastPoll_ = 0; // 马上刷新显示
-    }
+    catalog_.Assign(std::move(defs));
+}
 
-    if (!visible)
+std::string OptionEditor::PollCode() const
+{
+    return std::string(kResolveUnit) + kUnitLua;
+}
+
+void OptionEditor::OnPoll(const bridge::Result& r)
+{
+    unit_ = {};
+    if (!r.ok || r.text == "none")
         return;
-    if (catalog_.empty() && !catalogJob_.valid())
-        catalogJob_ = Run(kCatalogLua);
-    const ULONGLONG now = GetTickCount64();
-    if (!unitJob_.valid() && !action_.valid() && now - lastPoll_ >= 500) {
-        lastPoll_ = now;
-        unitJob_ = Run(std::string(kResolveUnit) + kUnitLua);
+    const auto lines = Split(r.text, '\n');
+    const auto head = Split(lines[0], kFs);
+    if (head.size() < 4)
+        return;
+    unit_.valid = true;
+    unit_.sym = head[0];
+    unit_.grade = head[1];
+    unit_.rank = atoi(head[2].c_str());
+    unit_.rosterIndex = atoi(head[3].c_str());
+    unit_.locked = head.size() < 5 || head[4] == "locked";
+    for (size_t i = 1; i < lines.size(); ++i) {
+        const auto f = Split(lines[i], kFs);
+        if (f.size() >= 4 && f[0] == "S")
+            unit_.slots.push_back({ atoi(f[1].c_str()), f[2], f[3] });
+        else if (f.size() >= 4 && f[0] == "E")
+            unit_.fit[f[1]] = { f[2], atoi(f[3].c_str()) };
     }
 }
 
 void OptionEditor::SetOption(int slot, const std::string& id, const std::string& variant)
 {
-    if (action_.valid() || !unit_.valid)
+    if (Busy() || !unit_.valid)
         return;
     // 先核对选中的还是界面上显示的那个单位，再生成词条实例放进槽位
     std::string code = CheckSameUnit(unit_.sym, unit_.rosterIndex) +
@@ -203,20 +179,18 @@ void OptionEditor::SetOption(int slot, const std::string& id, const std::string&
             "return 'ok'\n";
     const Def* d = Find(id);
     const std::string what = "「" + (d ? d->name : id) + (variant.empty() ? "" : " " + variant) + "」";
-    message_ = slot > static_cast<int>(unit_.slots.size()) ? "已新增词条" + what
-                                                           : "已把第 " + std::to_string(slot) + " 个词条换成" + what;
-    action_ = Run(std::move(code));
+    const bool adding = slot > static_cast<int>(unit_.slots.size());
+    Act(std::move(code), adding ? "已新增词条" + what : "已把第 " + std::to_string(slot) + " 个词条换成" + what);
 }
 
 void OptionEditor::RemoveOption(int slot)
 {
-    if (action_.valid() || !unit_.valid)
+    if (Busy() || !unit_.valid)
         return;
     std::string code = CheckSameUnit(unit_.sym, unit_.rosterIndex) +
         "if u.randomOptions and u.randomOptions[" + std::to_string(slot) + "] then table.remove(u.randomOptions, " +
         std::to_string(slot) + ") end\n" +
         "u.randomOption = u.randomOptions and u.randomOptions[1] or nil\n"
         "return 'ok'\n";
-    message_ = "已删除第 " + std::to_string(slot) + " 个词条";
-    action_ = Run(std::move(code));
+    Act(std::move(code), "已删除第 " + std::to_string(slot) + " 个词条");
 }

@@ -1,7 +1,5 @@
 #include "imprints.h"
 
-#include <windows.h>
-
 #include <cstdlib>
 
 #include "luaops.h"
@@ -53,83 +51,54 @@ return table.concat(out, '\n')
 
 } // namespace
 
-const ImprintEditor::Def* ImprintEditor::Find(const std::string& id) const
+const char* ImprintEditor::CatalogCode() const
 {
-    for (const Def& d : catalog_)
-        if (d.id == id)
-            return &d;
-    return nullptr;
+    return kCatalogLua;
 }
 
-void ImprintEditor::Update(bool visible)
+void ImprintEditor::OnCatalog(const std::string& text)
 {
-    if (Ready(catalogJob_)) {
-        const bridge::Result r = catalogJob_.get();
-        if (!r.ok) {
-            error_ = "读刻印目录失败：" + r.text;
-        } else {
-            catalog_.clear();
-            for (const std::string& line : Split(r.text, '\n')) {
-                const auto f = Split(line, kFs);
-                if (f.size() < 4)
-                    continue;
-                catalog_.push_back({ f[0], f[1], f[2], Split(f[3], '|') });
-            }
-            error_.clear();
-        }
+    std::vector<Def> defs;
+    for (const std::string& line : Split(text, '\n')) {
+        const auto f = Split(line, kFs);
+        if (f.size() >= 4)
+            defs.push_back({ f[0], f[1], f[2], LevelTexts(f[3]) });
     }
-    if (Ready(unitJob_)) {
-        const bridge::Result r = unitJob_.get();
-        unit_ = {};
-        if (r.ok && r.text != "none") {
-            const auto lines = Split(r.text, '\n');
-            const auto head = Split(lines[0], kFs);
-            if (head.size() >= 7) {
-                unit_.valid = true;
-                unit_.sym = head[0];
-                unit_.grade = head[1];
-                unit_.rank = atoi(head[2].c_str());
-                unit_.rosterIndex = atoi(head[3].c_str());
-                unit_.locked = head[4] == "locked";
-                unit_.maxSlots = atoi(head[5].c_str());
-                unit_.signature = head[6];
-                for (size_t i = 1; i < lines.size(); ++i) {
-                    const auto f = Split(lines[i], kFs);
-                    if (f.size() >= 4 && f[0] == "S")
-                        unit_.slots.push_back({ atoi(f[1].c_str()), f[2], atoi(f[3].c_str()) });
-                }
-            }
-        } else if (!r.ok) {
-            error_ = r.text;
-        }
-    }
-    if (Ready(action_)) {
-        const std::string err = ActionError(action_.get());
-        if (!err.empty())
-            message_ = err;
-        lastPoll_ = 0; // 马上刷新显示
-    }
+    catalog_.Assign(std::move(defs));
+}
 
-    if (!visible)
+std::string ImprintEditor::PollCode() const
+{
+    return std::string(kResolveUnit) + kUnitLua;
+}
+
+void ImprintEditor::OnPoll(const bridge::Result& r)
+{
+    unit_ = {};
+    if (!r.ok || r.text == "none")
         return;
-    if (catalog_.empty() && !catalogJob_.valid())
-        catalogJob_ = Run(kCatalogLua);
-    const ULONGLONG now = GetTickCount64();
-    if (!unitJob_.valid() && !action_.valid() && now - lastPoll_ >= 500) {
-        lastPoll_ = now;
-        unitJob_ = Run(std::string(kResolveUnit) + kUnitLua);
+    const auto lines = Split(r.text, '\n');
+    const auto head = Split(lines[0], kFs);
+    if (head.size() < 7)
+        return;
+    unit_.valid = true;
+    unit_.sym = head[0];
+    unit_.grade = head[1];
+    unit_.rank = atoi(head[2].c_str());
+    unit_.rosterIndex = atoi(head[3].c_str());
+    unit_.locked = head[4] == "locked";
+    unit_.maxSlots = atoi(head[5].c_str());
+    unit_.signature = head[6];
+    for (size_t i = 1; i < lines.size(); ++i) {
+        const auto f = Split(lines[i], kFs);
+        if (f.size() >= 4 && f[0] == "S")
+            unit_.slots.push_back({ atoi(f[1].c_str()), f[2], atoi(f[3].c_str()) });
     }
-}
-
-void ImprintEditor::Act(std::string code, std::string message)
-{
-    message_ = std::move(message);
-    action_ = Run(std::move(code));
 }
 
 void ImprintEditor::Set(int slot, const std::string& id, int level)
 {
-    if (action_.valid() || !unit_.valid)
+    if (Busy() || !unit_.valid)
         return;
     // 实例照游戏的做法生成：signatureImprint 的上值里有个 mk(定义, 稀有度)（只会生成 1 级），
     // 再把 level / stats / desc 换成目标等级的；找不到 mk 就按同样的字段自己拼
@@ -176,7 +145,7 @@ void ImprintEditor::Set(int slot, const std::string& id, int level)
 
 void ImprintEditor::Remove(int slot)
 {
-    if (action_.valid() || !unit_.valid)
+    if (Busy() || !unit_.valid)
         return;
     std::string code = CheckSameUnit(unit_.sym, unit_.rosterIndex) +
         "if u.imprints and u.imprints[" + std::to_string(slot) + "] then table.remove(u.imprints, " +
@@ -187,7 +156,7 @@ void ImprintEditor::Remove(int slot)
 
 void ImprintEditor::SetMaxSlots(int slots)
 {
-    if (action_.valid() || !unit_.valid || slots < 1)
+    if (Busy() || !unit_.valid || slots < 1)
         return;
     std::string code = CheckSameUnit(unit_.sym, unit_.rosterIndex) +
         "u.maxImprintSlots = " + std::to_string(slots) + "\n"

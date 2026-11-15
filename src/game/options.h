@@ -1,11 +1,10 @@
 #pragma once
 
-#include <future>
 #include <map>
 #include <string>
 #include <vector>
 
-#include "bridge/luaclient.h"
+#include "lua_editor.h"
 
 // 词条（random option）编辑：经游戏内的 slotbound_lua.dll 在游戏主线程执行 Lua。
 //
@@ -15,14 +14,14 @@
 //   unit.randomOptions     单位的词条列表；unit.randomOption 永远是第 1 个
 //   tooltip.lockedTarget   当前点选（锁定）的目标；kind == 'roster' 时 .ref 是己方单位
 //   battlefield.beginBattle 战斗开始时按 randomOptions 算属性倍率并缓存 → 战斗外改，下一场生效
-class OptionEditor {
+class OptionEditor : public LuaEditor {
 public:
     struct Variant {
         std::string value;  // "+10%"
         double chance = 0;  // 0.05
     };
     struct Def {
-        std::string id, name, rarity, source, effect, notes;
+        std::string id, name, rarity, source, effect, notes; // effect 已把图标换成文字
         bool unlocked = true;
         std::vector<Variant> variants;
     };
@@ -44,28 +43,21 @@ public:
         std::map<std::string, Fit> fit; // 词条 id → 适用情况
     };
 
-    // 每帧调用：收后台结果；visible 时每 0.5 秒刷新一次选中单位，第一次连上时读词条目录
-    void Update(bool visible);
-
     // 把 slot（1 起；= 现有数量 + 1 表示新增）设成 id 的词条，variant 为空 = 随机档位
     void SetOption(int slot, const std::string& id, const std::string& variant);
     void RemoveOption(int slot);
-    void ReloadCatalog() { catalog_.clear(); }
 
-    bool Busy() const { return action_.valid(); }
-    const std::vector<Def>& Catalog() const { return catalog_; }
-    const Def* Find(const std::string& id) const;
+    const std::vector<Def>& Catalog() const { return catalog_.All(); }
+    const Def* Find(const std::string& id) const { return catalog_.Find(id); }
     const Unit& Selected() const { return unit_; }
-    const std::string& Message() const { return message_; }
-    const std::string& Error() const { return error_; }
 
 private:
-    std::future<bridge::Result> catalogJob_;
-    std::future<bridge::Result> unitJob_;
-    std::future<bridge::Result> action_;
-    std::vector<Def> catalog_;
+    std::string PollCode() const override;
+    void OnPoll(const bridge::Result& r) override;
+    const char* CatalogCode() const override;
+    const char* CatalogName() const override { return "词条目录"; }
+    void OnCatalog(const std::string& text) override;
+
+    DefTable<Def> catalog_;
     Unit unit_;
-    std::string message_;
-    std::string error_;
-    unsigned long long lastPoll_ = 0;
 };

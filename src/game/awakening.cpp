@@ -1,7 +1,5 @@
 #include "awakening.h"
 
-#include <windows.h>
-
 #include <cstdlib>
 
 #include "luaops.h"
@@ -69,69 +67,42 @@ return 'ok'
 
 } // namespace
 
-const AwakeningEditor::Def* AwakeningEditor::Find(const std::string& id) const
+std::string AwakeningEditor::PollCode() const
 {
-    for (const Def& d : unit_.defs)
-        if (d.id == id)
-            return &d;
-    return nullptr;
+    return std::string(kResolveUnit) + kUnitLua;
 }
 
-void AwakeningEditor::Update(bool visible)
+void AwakeningEditor::OnPoll(const bridge::Result& r)
 {
-    if (Ready(unitJob_)) {
-        const bridge::Result r = unitJob_.get();
-        unit_ = {};
-        if (r.ok && r.text != "none") {
-            const auto lines = Split(r.text, '\n');
-            const auto head = Split(lines[0], kFs);
-            if (head.size() >= 9 && head[0] == "H") {
-                unit_.valid = true;
-                unit_.sym = head[1];
-                unit_.rosterIndex = atoi(head[2].c_str());
-                unit_.hasAwakening = head[3] == "1";
-                unit_.identity = head[4];
-                unit_.version = atoi(head[5].c_str());
-                unit_.capacity = atoi(head[6].c_str());
-                unit_.level = atoi(head[7].c_str());
-                if (!head[8].empty())
-                    unit_.selected = Split(head[8], ',');
-                for (size_t i = 1; i < lines.size(); ++i) {
-                    const auto f = Split(lines[i], kFs);
-                    if (f.size() >= 6 && f[0] == "D")
-                        unit_.defs.push_back({ f[1], f[2], f[3], Split(f[5], '|'), f[4] == "1" });
-                }
+    unit_ = {};
+    std::vector<Def> defs;
+    if (r.ok && r.text != "none") {
+        const auto lines = Split(r.text, '\n');
+        const auto head = Split(lines[0], kFs);
+        if (head.size() >= 9 && head[0] == "H") {
+            unit_.valid = true;
+            unit_.sym = head[1];
+            unit_.rosterIndex = atoi(head[2].c_str());
+            unit_.hasAwakening = head[3] == "1";
+            unit_.identity = head[4];
+            unit_.version = atoi(head[5].c_str());
+            unit_.capacity = atoi(head[6].c_str());
+            unit_.level = atoi(head[7].c_str());
+            if (!head[8].empty())
+                unit_.selected = Split(head[8], ',');
+            for (size_t i = 1; i < lines.size(); ++i) {
+                const auto f = Split(lines[i], kFs);
+                if (f.size() >= 6 && f[0] == "D")
+                    defs.push_back({ f[1], f[2], f[3], LevelTexts(f[5]), f[4] == "1" });
             }
-            error_.clear();
-        } else if (!r.ok) {
-            error_ = r.text;
         }
     }
-    if (Ready(action_)) {
-        const std::string err = ActionError(action_.get());
-        if (!err.empty())
-            message_ = err;
-        lastPoll_ = 0;
-    }
-
-    if (!visible)
-        return;
-    const ULONGLONG now = GetTickCount64();
-    if (!unitJob_.valid() && !action_.valid() && now - lastPoll_ >= 500) {
-        lastPoll_ = now;
-        unitJob_ = Run(std::string(kResolveUnit) + kUnitLua);
-    }
-}
-
-void AwakeningEditor::Act(std::string code, std::string message)
-{
-    message_ = std::move(message);
-    action_ = Run(std::move(code));
+    defs_.Assign(std::move(defs));
 }
 
 void AwakeningEditor::Set(int slot, const std::string& id)
 {
-    if (action_.valid() || !unit_.valid || !unit_.hasAwakening)
+    if (Busy() || !unit_.valid || !unit_.hasAwakening)
         return;
     std::string code = CheckSameUnit(unit_.sym, unit_.rosterIndex) +
         "local A = require('src.game.awakening')\n"
@@ -157,7 +128,7 @@ void AwakeningEditor::Set(int slot, const std::string& id)
 
 void AwakeningEditor::Remove(int slot)
 {
-    if (action_.valid() || !unit_.valid || !unit_.hasAwakening)
+    if (Busy() || !unit_.valid || !unit_.hasAwakening)
         return;
     std::string code = CheckSameUnit(unit_.sym, unit_.rosterIndex) +
         "local aw = u.awakening\n"
