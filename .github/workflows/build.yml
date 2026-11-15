@@ -1,5 +1,5 @@
 # 每次推送 / PR：编便携版，上传成构建产物（Actions 页面下载 zip）。
-# 推 v* 标签（例如 v0.2.0）：同时发 GitHub Release，附上 zip。
+# 推 v* 标签（例如 v0.2.0）：同时发 GitHub Release，直接附上 exe。
 name: build
 
 on:
@@ -34,17 +34,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.pkg.outputs.name }}
-          path: dist/
+          path: dist/slotbound_trainer.exe
           if-no-files-found: error
-
-      - name: Zip for release
-        if: github.ref_type == 'tag'
-        shell: pwsh
-        run: Compress-Archive -Path dist/* -DestinationPath "${{ steps.pkg.outputs.name }}.zip"
 
       - name: Publish release
         if: github.ref_type == 'tag'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create '${{ github.ref_name }}' "${{ steps.pkg.outputs.name }}.zip" --title '${{ github.ref_name }}' --generate-notes
+        run: gh release create '${{ github.ref_name }}' dist/slotbound_trainer.exe --title '${{ github.ref_name }}' --generate-notes

@@ -26,6 +26,7 @@ set(APP_SOURCES
     src/unitlevel.cpp
     src/bridge/luaclient.cpp
     src/bridge/injector.cpp
+    src/bridge/embedded_dll.cpp
 )
 
 set(IMGUI_SOURCES
@@ -57,6 +58,18 @@ target_compile_options(slotbound_trainer PRIVATE /utf-8 /MP)
 set_source_files_properties(${APP_SOURCES} PROPERTIES COMPILE_OPTIONS "/W4")
 
 target_link_libraries(slotbound_trainer PRIVATE d3d11 dxgi dwmapi)
+
+# 注入用的 slotbound_lua.dll 编进修改器 exe（发出去只要一个 exe），注入前由 embedded_dll.cpp 释放出来。
+# DLL 重编后这里跟着重新生成。
+set(LUA_DLL_BLOB ${CMAKE_BINARY_DIR}/generated/lua_dll_blob.cpp)
+add_custom_command(
+    OUTPUT ${LUA_DLL_BLOB}
+    COMMAND ${CMAKE_COMMAND} -DIN=$<TARGET_FILE:slotbound_lua> -DOUT=${LUA_DLL_BLOB} -DNAME=kLuaDll
+            -P ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
+    DEPENDS slotbound_lua $<TARGET_FILE:slotbound_lua> ${CMAKE_SOURCE_DIR}/cmake/embed.cmake
+    COMMENT "Embedding slotbound_lua.dll"
+    VERBATIM)
+target_sources(slotbound_trainer PRIVATE ${LUA_DLL_BLOB})
 
 # 诊断工具：命令行里定位 Lua 全局变量、打印 / 写入，开发期核对用
 add_executable(slotbound_probe src/probe.cpp src/process.cpp src/luajit.cpp)

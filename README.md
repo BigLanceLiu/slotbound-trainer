@@ -26,8 +26,11 @@
 （命名管道 `\\.\pipe\slotbound_lua`），执行完把 Lua 栈恢复原样。只改这一个指针，不改代码字节、不改游戏文件；
 点「卸载注入」或关游戏就恢复。金币 / 旋转 / 水晶不需要注入。
 
+`slotbound_lua.dll` 编在修改器 exe 里面，点「注入」时释放到 `%LOCALAPPDATA%\slotbound-trainer\slotbound_lua_<内容哈希>.dll` 再加载；
+同一版本只释放一次，新版本换新文件名（旧的那份游戏可能还占着，不覆盖）。
+
 命令行工具（开发用）：`slotbound_inject.exe load|unload`、`slotbound_luacmd.exe "return coins"` / `-f 脚本.lua`。
-注入期间 `build\Release\slotbound_lua.dll` 被游戏占用，改了 DLL 源码要先卸载再编译。
+修改器注入的是释放出来的那份，`build\Release\slotbound_lua.dll` 只有用 `slotbound_inject.exe` 注入时才会被游戏占用。
 
 还没做：波次、基地血量、棱彩概率，见 [docs/plan.md](docs/plan.md)。
 
@@ -50,23 +53,24 @@
 
 ## 下载
 
-GitHub Actions 每次推送到 `main` 都会编一份便携版：Actions 页面 → 对应的 build 运行 → Artifacts 里下载 zip。
-推 `v*` 标签（如 `git tag v0.2.0 && git push origin v0.2.0`）会自动发 Release，附上 zip。
+便携版只有一个文件 `slotbound_trainer.exe`（注入用的 DLL 已经编在里面），放哪都能直接运行。
+设置存在 exe 旁边的 `trainer.ini`：没有就用默认值，第一次改设置时自动生成。
 
-zip 里是：`slotbound_trainer.exe`（修改器）、`slotbound_lua.dll`（注入用，必须和 exe 放同一个目录）、
-`slotbound_inject.exe` / `slotbound_luacmd.exe`（命令行工具）、`trainer.ini`（默认配置）。
+- GitHub Actions 每次推送到 `main` 都会编一份：Actions 页面 → 对应的 build 运行 → Artifacts 里下载（网页下载会套一层 zip），
+  或 `gh run download <运行号> -R GGGLHHH/slotbound-trainer`。
+- 推 `v*` 标签（如 `git tag v0.2.0 && git push origin v0.2.0`）会自动发 Release，直接附上 exe。
 
 ## 编译
 
 ```powershell
 .\build.ps1          # 开发版，读 config\trainer.ini
-.\build.ps1 -Dist    # 便携版 → dist\：修改器 + slotbound_lua.dll + 工具 + trainer.ini（CI 也是跑这个）
+.\build.ps1 -Dist    # 便携版 → dist\slotbound_trainer.exe 单文件（CI 也是跑这个）
 ```
 
 需要 VS 2022（带 C++ 桌面开发）。产物在 `build\Release\`：
 
 - `slotbound_trainer.exe`：修改器本体
-- `slotbound_lua.dll` / `slotbound_inject.exe` / `slotbound_luacmd.exe`：注入用的 DLL、命令行注入 / 卸载、命令行执行 Lua
+- `slotbound_lua.dll` / `slotbound_inject.exe` / `slotbound_luacmd.exe`：注入用的 DLL（也编进了修改器 exe）、命令行注入 / 卸载、命令行执行 Lua（开发用）
 - `slotbound_probe.exe`：命令行定位工具，排查用
 
 ```powershell

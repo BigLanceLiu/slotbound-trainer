@@ -12,6 +12,7 @@
 #include <map>
 #include <string>
 
+#include "bridge/embedded_dll.h"
 #include "bridge/injector.h"
 #include "config.h"
 #include "imgui.h"
@@ -377,7 +378,9 @@ bool DrawBridgeBar(const GameProcess& game, std::string& injectError, const char
                            "它只改 love.dll 导入表里的一个函数指针，不改游戏文件，点「卸载注入」或游戏退出就没了。", feature);
         if (ImGui::Button("注入（启用单位 / 老虎机功能）")) {
             injectError.clear();
-            if (!bridge::Inject(game.Pid(), L"", injectError))
+            // DLL 内嵌在修改器 exe 里，先释放到 %LOCALAPPDATA%\slotbound-trainer\ 再注入
+            const std::wstring dll = bridge::ExtractEmbeddedDll(injectError);
+            if (dll.empty() || !bridge::Inject(game.Pid(), dll, injectError))
                 injectError = "注入失败：" + injectError;
         }
         if (!injectError.empty())
