@@ -18,6 +18,7 @@
 #include "imgui.h"
 #include "awakening.h"
 #include "imprints.h"
+#include "items.h"
 #include "luavar.h"
 #include "options.h"
 #include "overlay.h"
@@ -953,7 +954,184 @@ struct LuaTabs {
     AwakeningEditor awakening;
     AwakeningUi awakeningUi;
     bool awakeningOpen = false;
+    ItemEditor items;
+    std::map<std::string, int> itemLevelPick; // 目录里每件物品选的等级
+    char itemFilter[64] = {};
+    bool itemsOpen = false;
 };
+
+// 稀有度字母 → 颜色 / 名字
+ImVec4 ItemRarityColor(const std::string& r)
+{
+    if (r == "U")
+        return ImVec4(0.45f, 0.85f, 0.45f, 1.0f);
+    if (r == "R")
+        return ImVec4(0.45f, 0.7f, 1.0f, 1.0f);
+    if (r == "L")
+        return ImVec4(1.0f, 0.7f, 0.3f, 1.0f);
+    return ImVec4(0.85f, 0.87f, 0.9f, 1.0f);
+}
+
+const char* ItemRarityName(const std::string& r)
+{
+    if (r == "C")
+        return "普通";
+    if (r == "U")
+        return "罕见";
+    if (r == "R")
+        return "稀有";
+    if (r == "L")
+        return "传说";
+    return r.c_str();
+}
+
+std::string ItemEffect(const ItemEditor::Def* d, int level)
+{
+    if (!d || level < 1 || level > static_cast<int>(d->levels.size()))
+        return {};
+    return IconText(d->levels[level - 1]);
+}
+
+// 「物品」页：背包（改等级 / 删除）+ 全部物品（直接放进背包）
+void DrawItemsTab(const GameProcess& game, LuaTabs& tabs)
+{
+    if (!DrawBridgeBar(game, tabs.injectError, "物品"))
+        return;
+    tabs.itemsOpen = true;
+    ItemEditor& editor = tabs.items;
+    const float scale = ImGui::GetStyle().FontScaleDpi;
+    if (!editor.Error().empty())
+        ImGui::TextColored(kRed, "%s", editor.Error().c_str());
+    if (!editor.Loaded()) {
+        ImGui::TextDisabled("正在读背包…");
+        return;
+    }
+
+    const auto& inv = editor.Inventory();
+    SectionTitle("背包");
+    ImGui::Text("%d 件 / %d 格", static_cast<int>(inv.size()), editor.Capacity());
+    if (static_cast<int>(inv.size()) > editor.Capacity()) {
+        ImGui::SameLine();
+        ImGui::TextColored(kAmber, "比格子多：界面可能显示不全，商店也买不了新物品（买重复的升级照常）");
+    }
+    if (ImGui::BeginTable("inv", 4, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 110.0f * scale);
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 70.0f * scale);
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 40.0f * scale);
+        for (const ItemEditor::Owned& o : inv) {
+            const ItemEditor::Def* d = editor.Find(o.id);
+            ImGui::TableNextRow();
+            ImGui::PushID(o.index);
+            ImGui::TableNextColumn();
+            ImGui::TextColored(d ? ItemRarityColor(d->rarity) : kRed, "%s", d ? d->name.c_str() : o.id.c_str());
+            ImGui::TableNextColumn();
+            int level = o.level;
+            ImGui::BeginDisabled(editor.Busy());
+            if (LevelCombo("##lv", level, o.maxLevel > 0 ? o.maxLevel : 1))
+                editor.SetLevel(o.index, o.id, level);
+            ImGui::EndDisabled();
+            ImGui::TableNextColumn();
+            ImGui::TextWrapped("%s", ItemEffect(d, o.level).c_str());
+            ImGui::TableNextColumn();
+            ImGui::BeginDisabled(editor.Busy());
+            if (ImGui::SmallButton("删除"))
+                editor.Remove(o.index, o.id);
+            ImGui::EndDisabled();
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    if (inv.empty())
+        ImGui::TextDisabled("背包是空的");
+    if (!editor.Message().empty())
+        ImGui::TextDisabled("%s", editor.Message().c_str());
+    ImGui::TextDisabled("等级最高到该物品的满级（游戏的数值表只有这么多级）。删除不退水晶。效果战斗中实时生效，存档会保存");
+
+    SectionTitle("全部物品");
+    ImGui::SetNextItemWidth(200.0f * scale);
+    ImGui::InputTextWithHint("##filter", "搜索名字 / 效果", tabs.itemFilter, sizeof(tabs.itemFilter));
+    ImGui::SameLine();
+    ImGui::TextDisabled("已有的会直接改成选的等级；没解锁、别的关卡的也能放");
+    if (editor.Catalog().empty()) {
+        ImGui::TextDisabled("正在读物品表…");
+        return;
+    }
+    // 按品阶分组：传说 → 稀有 → 罕见 → 普通；搜索时只列有匹配的组，括号里是匹配数
+    auto matches = [&](const ItemEditor::Def& d, int level) {
+        return !tabs.itemFilter[0] || d.name.find(tabs.itemFilter) != std::string::npos ||
+               ItemEffect(&d, level).find(tabs.itemFilter) != std::string::npos;
+    };
+    ImGui::BeginChild("icat", ImVec2(0.0f, 380.0f * scale));
+    for (const char* rarity : { "L", "R", "U", "C" }) {
+        int total = 0;
+        for (const ItemEditor::Def& d : editor.Catalog()) {
+            if (d.rarity != rarity)
+                continue;
+            const int level = tabs.itemLevelPick.try_emplace(d.id, d.maxLevel > 0 ? d.maxLevel : 1).first->second;
+            total += matches(d, level);
+        }
+        if (total == 0)
+            continue;
+        char header[64];
+        snprintf(header, sizeof(header), "%s（%d）###item_%s", ItemRarityName(rarity), total, rarity);
+        ImGui::PushStyleColor(ImGuiCol_Text, ItemRarityColor(rarity));
+        const bool open = ImGui::CollapsingHeader(header, ImGuiTreeNodeFlags_DefaultOpen);
+        ImGui::PopStyleColor();
+        if (!open)
+            continue;
+        const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp;
+        if (!ImGui::BeginTable(rarity, 4, flags))
+            continue;
+        ImGui::TableSetupColumn("物品", ImGuiTableColumnFlags_WidthFixed, 120.0f * scale);
+        ImGui::TableSetupColumn("效果", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("等级", ImGuiTableColumnFlags_WidthFixed, 70.0f * scale);
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 72.0f * scale);
+        for (const ItemEditor::Def& d : editor.Catalog()) {
+            if (d.rarity != rarity)
+                continue;
+            int& level = tabs.itemLevelPick.try_emplace(d.id, d.maxLevel > 0 ? d.maxLevel : 1).first->second;
+            if (!matches(d, level))
+                continue;
+            const std::string effect = ItemEffect(&d, level);
+            int ownedLevel = 0;
+            for (const ItemEditor::Owned& o : inv)
+                if (o.id == d.id)
+                    ownedLevel = o.level;
+            ImGui::TableNextRow();
+            ImGui::PushID(d.id.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextColored(ItemRarityColor(d.rarity), "%s", d.name.c_str());
+            ImGui::TextDisabled("%s · %s · %d 水晶", d.type.c_str(), ItemRarityName(d.rarity), d.price);
+            if (!d.unlocked)
+                ImGui::TextColored(kAmber, "升级树没解锁");
+            if (!d.stage.empty() && d.stage != "all" && d.stage != "nil")
+                ImGui::TextDisabled("第 %s 关的物品", d.stage.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextWrapped("%s", effect.c_str());
+            if (ImGui::IsItemHovered() && d.levels.size() > 1) {
+                ImGui::BeginTooltip();
+                ImGui::PushTextWrapPos(420.0f * scale);
+                for (int i = 1; i <= static_cast<int>(d.levels.size()); ++i)
+                    ImGui::Text("%d 级：%s", i, ItemEffect(&d, i).c_str());
+                ImGui::PopTextWrapPos();
+                ImGui::EndTooltip();
+            }
+            if (ownedLevel > 0)
+                ImGui::TextColored(kGreen, "背包里有，%d 级", ownedLevel);
+            ImGui::TableNextColumn();
+            LevelCombo("##lv", level, d.maxLevel > 0 ? d.maxLevel : 1);
+            ImGui::TableNextColumn();
+            ImGui::BeginDisabled(editor.Busy() || ownedLevel == level);
+            if (ImGui::SmallButton(ownedLevel > 0 ? "改成这级" : "放进背包"))
+                editor.Add(d.id, level);
+            ImGui::EndDisabled();
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    ImGui::EndChild();
+}
 
 // 「单位」页：选中单位的信息和等级，下面分「词条」「刻印」两个子页
 void DrawUnitTab(const GameProcess& game, LuaTabs& tabs)
@@ -1224,6 +1402,7 @@ bool DrawMenu(Config& cfg, const std::wstring& cfgPath, bool& cfgFileFound, cons
     bool keepRunning = true;
     const float scale = ImGui::GetStyle().FontScaleDpi;
     tabs.unitOpen = false;
+    tabs.itemsOpen = false;
     tabs.optionsOpen = false;
     tabs.imprintsOpen = false;
     tabs.awakeningOpen = false;
@@ -1247,6 +1426,11 @@ bool DrawMenu(Config& cfg, const std::wstring& cfgPath, bool& cfgFileFound, cons
         if (ImGui::BeginTabItem("单位")) {
             tabs.unitOpen = true;
             DrawUnitTab(game, tabs);
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("物品")) {
+            DrawItemsTab(game, tabs);
             ImGui::EndTabItem();
         }
 
@@ -1426,6 +1610,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         tabs.options.Update(luaReady && tabs.unitOpen && tabs.optionsOpen);
         tabs.imprints.Update(luaReady && tabs.unitOpen && tabs.imprintsOpen);
         tabs.awakening.Update(luaReady && tabs.unitOpen && tabs.awakeningOpen);
+        tabs.items.Update(luaReady && tabs.itemsOpen);
         // 老虎机控制不管菜单开没开都要保持（每秒检查包装还在不在）
         tabs.slot.Update(game.Pid() && bridge::Injected(), cfg.enabled && cfg.slotJackpot, cfg.slotSymbol);
         overlay::BeginFrame();

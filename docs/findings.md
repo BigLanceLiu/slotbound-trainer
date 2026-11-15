@@ -158,6 +158,20 @@ coins（Lua 全局，真正的来源）
 - 验证（合成的幻影单位）：W12/W28/W05 都是 III 级（终结 30%）→ 加 W01、W02 → 全部 V 级（终结 40%）；加第 6 个被截掉；删 1 个 → 全部 IV 级。
 - 修改器「单位 → 觉醒」子页（`src/awakening.cpp`）：只列本职业候选，新增 / 替换 / 删除，改完调 `A.normalize`。
 
+## 物品（商店）
+
+- 定义 `require('src.game.item')`：`getAll()` 63 件（战斗 55、训练手册 8），`getById(id)`；字段 id、price、rarity C/U/R/L、
+  maxLevel（C 3 / U 2 / R、L 1）、typeKo（전투 / 훈련）、initiallyUnlocked、stage（all 或第几关）、各级数值表（如 `damageReduction = {0.1, 0.15, 0.2}`）、
+  `updateEffectString`。中文 `language.zh['item.name.<id>']`、`['item.effect.<id>.<级>']`。
+- 背包 `ui._itemPurchased[i]`（定义的浅拷贝 + level），面板键 `ui._itemPurchasedKeys[i] = 'p' .. ui._itemPanelNextId`（两条并行列表）。
+  商店 `ui._itemOffers[1..3]`、本轮已买 `ui._itemShopPurchased[格]`、刷新价 `ui._itemRerollCost`、轮次 `ui._itemOfferCycleId`。
+- 购买（反汇编 `love.mousepressed` pc 5251–5719）：本轮买过就不行 → 找已有同 id → 已满级拒绝 → 新物品且 `#背包 >= getItemInventoryCapacity()` 拒绝 →
+  价格（上值函数，含折扣 `__slotShopDiscountFor`）> `jungsu` 拒绝 → 扣水晶 → 已有：`level = min(满级, level + 1)`；新：复制、level 1、
+  `updateEffectString`、插入、分配面板键。**没有 apply 钩子**，效果在战斗里实时查背包（如 `__slotGetSturdyFistBasicAttackDamageMul`）。
+- `getItemInventoryCapacity() = min(8, 6 + 加成)`，界面最多 8 格。读档 `restorePurchasedItems` 按 id + level 用 `getById` 重建。
+- 修改器「物品」页（`src/items.cpp`）：背包改等级 / 删除（不退水晶），全部物品直接放进背包（已有就改等级），等级压到满级以内。
+  验证（假背包）：加拳套 → 改 3 级（效果文字 12%）、团结项链要 5 级被压成 1、没解锁的满溢圣杯照样能加，面板键 p11/p12/p13 连续。
+
 ## 被动技能触发条件
 
 - 被动技能只有 10 个：闪光斩击 / 闪光乱舞（`FlashSlash`，`runtime.charges = 7` 次普攻）、梦魇连击 / 灾厄连击（`NightmareFlurry`，

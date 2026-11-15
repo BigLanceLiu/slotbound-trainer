@@ -22,6 +22,7 @@ set(APP_SOURCES
     src/options.cpp
     src/awakening.cpp
     src/imprints.cpp
+    src/items.cpp
     src/slotctl.cpp
     src/unitlevel.cpp
     src/bridge/luaclient.cpp
